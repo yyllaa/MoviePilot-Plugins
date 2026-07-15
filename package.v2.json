@@ -1,0 +1,14 @@
+{
+  "FlowpanEventNotify": {
+    "name": "Flowpan事件通知",
+    "description": "聚合115转移完成事件并通知Flowpan更新",
+    "labels": "STRM",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
+    "author": "Flowpan",
+    "level": 1,
+    "history": {
+      "v1.0.0": "初始版本"
+    }
+  }
+}
