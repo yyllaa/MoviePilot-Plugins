@@ -31,7 +31,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -96,12 +96,12 @@ class FlowpanEventNotify(_PluginBase):
             try:
                 storage_helper = StorageHelper()
                 storages = storage_helper.get_storagies()
-                if not any(
-                    item.type == self._storage_name and item.name == self._storage_name
-                    for item in storages
-                ):
+                storage_conf = self._mp_storage_conf()
+                if any(item.type == self._storage_name for item in storages):
+                    storage_helper.set_storage(self._storage_name, storage_conf)
+                else:
                     storage_helper.add_storage(
-                        storage=self._storage_name, name=self._storage_name, conf={}
+                        storage=self._storage_name, name=self._storage_name, conf=storage_conf
                     )
                 self._storage_api = FlowpanStorageAPI(
                     flowpan_url=self._flowpan_url,
@@ -615,6 +615,20 @@ class FlowpanEventNotify(_PluginBase):
     def _parse_target_storages(raw: Any) -> Set[str]:
         values = str(raw or "").replace("，", ",").split(",")
         return {value.strip().casefold() for value in values if value.strip()}
+
+    def _mp_storage_conf(self) -> Dict[str, Any]:
+        """
+        MoviePilot 存储卡片用 config 是否为空判断是否已配置。
+        这里不重复保存密钥，只写入非敏感桥接元数据。
+        """
+        return {
+            "enabled": True,
+            "driver": "flowpan_115_cookie_bridge",
+            "display_name": self._storage_name,
+            "flowpan_url": self._flowpan_url,
+            "part_size_mb": self._storage_part_size_mb,
+            "plugin_version": self.plugin_version,
+        }
 
     @staticmethod
     def _bounded_int(raw: Any, default: int, minimum: int, maximum: int) -> int:

@@ -266,7 +266,15 @@ class FlowpanStorageAPI:
         return None
 
     def storage_usage(self) -> StorageUsage:
-        return StorageUsage(total=0, available=0)
+        try:
+            data = self._api("/api/mp/storage/115/usage", {})
+            return StorageUsage(
+                total=float(data.get("total") or 0),
+                available=float(data.get("available") or 0),
+            )
+        except Exception as error:
+            logger.warning(f"【Flowpan存储】读取容量失败: {error}")
+            return StorageUsage(total=0, available=0)
 
     def support_transtype(self) -> dict:
         return {}
