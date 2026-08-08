@@ -1,17 +1,23 @@
 from threading import Lock, Thread, Timer
+from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.core.event import Event, eventmanager
 from app.log import logger
+from app.helper.storage import StorageHelper
 from app.plugins import _PluginBase
-from app.schemas.types import EventType
+from app.schemas import FileItem, StorageOperSelectionEventData
+from app.schemas.types import ChainEventType, EventType
 from app.utils.http import RequestUtils
+
+from .flowpan_storage import FlowpanStorageAPI
 
 
 DEFAULT_TARGET_STORAGES = "u115,115网盘Plus"
 DEFAULT_QUIET_SECONDS = 180
 DEFAULT_MAX_WAIT_SECONDS = 1800
+DEFAULT_STORAGE_NAME = "Flowpan-115"
 
 
 class FlowpanEventNotify(_PluginBase):
@@ -25,7 +31,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -43,6 +49,10 @@ class FlowpanEventNotify(_PluginBase):
         self._quiet_seconds = DEFAULT_QUIET_SECONDS
         self._max_wait_seconds = DEFAULT_MAX_WAIT_SECONDS
         self._target_storages: Set[str] = set()
+        self._storage_bridge_enabled = False
+        self._storage_name = DEFAULT_STORAGE_NAME
+        self._storage_part_size_mb = 10
+        self._storage_api: Optional[FlowpanStorageAPI] = None
         self._lock = Lock()
         self._timer: Optional[Timer] = None
         self._batch_started_at = 0.0
@@ -68,17 +78,49 @@ class FlowpanEventNotify(_PluginBase):
         target_storages = self._parse_target_storages(
             merged.get("target_storages", DEFAULT_TARGET_STORAGES)
         )
+        storage_name = str(merged.get("storage_name") or DEFAULT_STORAGE_NAME).strip()
+        storage_part_size_mb = self._bounded_int(
+            merged.get("storage_part_size_mb"), 10, 5, 128
+        )
         self._enabled = bool(merged.get("enabled"))
         self._flowpan_url = str(merged.get("flowpan_url") or "").strip()
         self._token = str(merged.get("token") or "").strip()
         self._quiet_seconds = quiet_seconds
         self._max_wait_seconds = max_wait_seconds
         self._target_storages = target_storages
+        self._storage_bridge_enabled = bool(merged.get("storage_bridge_enabled"))
+        self._storage_name = storage_name or DEFAULT_STORAGE_NAME
+        self._storage_part_size_mb = storage_part_size_mb
+        self._storage_api = None
+        if self._storage_bridge_enabled:
+            if not self._flowpan_url or not self._token:
+                logger.warning("【Flowpan事件通知】启用 MP 存储桥接前请先配置 Flowpan 地址和密钥")
+            else:
+                try:
+                    storage_helper = StorageHelper()
+                    storages = storage_helper.get_storagies()
+                    if not any(
+                        item.type == self._storage_name and item.name == self._storage_name
+                        for item in storages
+                    ):
+                        storage_helper.add_storage(
+                            storage=self._storage_name, name=self._storage_name, conf={}
+                        )
+                    self._storage_api = FlowpanStorageAPI(
+                        flowpan_url=self._flowpan_url,
+                        token=self._token,
+                        disk_name=self._storage_name,
+                        part_size_mb=self._storage_part_size_mb,
+                    )
+                except Exception as error:
+                    logger.error(f"【Flowpan事件通知】注册 Flowpan 存储失败: {error}")
         normalized = {
             **merged,
             "quiet_seconds": quiet_seconds,
             "max_wait_seconds": max_wait_seconds,
             "target_storages": ",".join(sorted(target_storages)),
+            "storage_name": self._storage_name,
+            "storage_part_size_mb": storage_part_size_mb,
         }
         if config and normalized != config:
             self.update_config(normalized)
@@ -125,6 +167,28 @@ class FlowpanEventNotify(_PluginBase):
         :return List: 空页面列表
         """
         return []
+
+    def get_module(self) -> Dict[str, Any]:
+        """
+        让 MoviePilot 文件管理器可以调用 Flowpan 115 存储桥接。
+        """
+        if not self._storage_api:
+            return {}
+        return {
+            "list_files": self.list_files,
+            "any_files": self.any_files,
+            "download_file": self.download_file,
+            "upload_file": self.upload_file,
+            "delete_file": self.delete_file,
+            "rename_file": self.rename_file,
+            "get_file_item": self.get_file_item,
+            "get_parent_item": self.get_parent_item,
+            "storage_usage": self.storage_usage,
+            "support_transtype": self.support_transtype,
+            "create_folder": self.create_folder,
+            "exists": self.exists,
+            "get_item": self.get_item,
+        }
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
@@ -242,6 +306,57 @@ class FlowpanEventNotify(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "storage_bridge_enabled",
+                                            "label": "启用 Flowpan 115 存储",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "storage_name",
+                                            "label": "MP 存储名称",
+                                            "hint": "创建后在 MoviePilot 存储选择里使用",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "storage_part_size_mb",
+                                            "label": "上传分片 MB",
+                                            "type": "number",
+                                            "min": 5,
+                                            "max": 128,
+                                            "hint": "默认 10MB，文件直接 PUT 到 115 OSS",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
@@ -261,7 +376,98 @@ class FlowpanEventNotify(_PluginBase):
             "quiet_seconds": DEFAULT_QUIET_SECONDS,
             "max_wait_seconds": DEFAULT_MAX_WAIT_SECONDS,
             "target_storages": DEFAULT_TARGET_STORAGES,
+            "storage_bridge_enabled": False,
+            "storage_name": DEFAULT_STORAGE_NAME,
+            "storage_part_size_mb": 10,
         }
+
+    @eventmanager.register(ChainEventType.StorageOperSelection)
+    def storage_oper_selection(self, event: Event) -> None:
+        """
+        MP 选择 Flowpan 存储时，把操作对象切到桥接适配器。
+        """
+        if not self._storage_bridge_enabled or not self._storage_api:
+            return
+        event_data: StorageOperSelectionEventData = event.event_data
+        if event_data.storage == self._storage_name:
+            event_data.storage_oper = self._storage_api  # noqa
+
+    def list_files(self, fileitem: FileItem, recursion: bool = False):
+        if not self._storage_item(fileitem):
+            return None
+        if recursion:
+            return self._storage_api.iter_files(fileitem)
+        return self._storage_api.list(fileitem)
+
+    def any_files(self, fileitem: FileItem, extensions: list = None):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.any_files(fileitem, extensions)
+
+    def create_folder(self, fileitem: FileItem, name: str):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.create_folder(fileitem, name)
+
+    def upload_file(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.upload(fileitem, path, new_name)
+
+    def download_file(self, fileitem: FileItem, path: Path = None):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.download(fileitem, path)
+
+    def delete_file(self, fileitem: FileItem):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.delete(fileitem)
+
+    def rename_file(self, fileitem: FileItem, name: str):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.rename(fileitem, name)
+
+    def get_file_item(self, storage: str, path: Path):
+        if storage != self._storage_name or not self._storage_api:
+            return None
+        return self._storage_api.get_item(path)
+
+    def get_item(self, storage: str, path: Path):
+        return self.get_file_item(storage, path)
+
+    def get_parent_item(self, fileitem: FileItem):
+        if not self._storage_item(fileitem):
+            return None
+        parent = Path(str(fileitem.path).rstrip("/")).parent
+        return self._storage_api.get_item(parent)
+
+    def exists(self, fileitem: FileItem):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.exists(fileitem)
+
+    def storage_usage(self, storage: str = ""):
+        if storage and storage != self._storage_name:
+            return None
+        if not self._storage_api:
+            return None
+        return self._storage_api.storage_usage()
+
+    def support_transtype(self, storage: str = ""):
+        if storage and storage != self._storage_name:
+            return None
+        if not self._storage_api:
+            return None
+        return self._storage_api.support_transtype()
+
+    def _storage_item(self, fileitem: FileItem) -> bool:
+        return bool(
+            self._storage_api
+            and fileitem is not None
+            and getattr(fileitem, "storage", None) == self._storage_name
+        )
 
     @eventmanager.register(
         [

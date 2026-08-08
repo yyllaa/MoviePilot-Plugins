@@ -1,13 +1,14 @@
 {
   "FlowpanEventNotify": {
     "name": "Flowpan事件通知",
-    "description": "聚合115转移完成事件并通知Flowpan更新",
+    "description": "聚合115转移完成事件并通知Flowpan更新，支持Flowpan 115原生上传桥接",
     "labels": "STRM",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "Flowpan",
     "level": 1,
     "history": {
+      "v1.1.0": "新增Flowpan 115原生上传桥接，支持秒传、分片直传OSS和断点恢复",
       "v1.0.0": "初始版本"
     }
   }
