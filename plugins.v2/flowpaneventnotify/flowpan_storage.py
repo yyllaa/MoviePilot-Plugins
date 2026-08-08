@@ -4,7 +4,7 @@ import math
 import os
 import posixpath
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -50,19 +50,23 @@ class FlowpanStorageAPI:
             logger.error(f"【Flowpan存储】本地文件不存在: {local_path}")
             return None
 
+        progress_callback = transfer_process(local_path.as_posix())
         target_name = new_name or local_path.name
         target_dir_path = self._dir_path(target_dir)
         target_path = posixpath.join(target_dir_path.rstrip("/") or "/", target_name)
         file_size = local_path.stat().st_size
-        file_sha1 = self._sha1_file(local_path)
-        target_cid = self._target_cid(target_dir, target_dir_path)
-        if target_cid is None:
-            return None
-        state_key = self._state_key(local_path, target_path, file_size, file_sha1)
 
         logger.info(f"【Flowpan存储】开始原生上传: {local_path} -> {target_path}")
-        progress_callback = transfer_process(local_path.as_posix())
         try:
+            progress_callback(1)
+            logger.info(f"【Flowpan存储】计算文件 SHA1: {target_name} size={file_size}")
+            file_sha1 = self._sha1_file(local_path, progress_callback, base=1, span=7)
+            progress_callback(8)
+            target_cid = self._target_cid(target_dir, target_dir_path)
+            if target_cid is None:
+                return None
+            progress_callback(9)
+            state_key = self._state_key(local_path, target_path, file_size, file_sha1)
             session = self._load_state(state_key) or {}
             if session:
                 try:
@@ -79,6 +83,7 @@ class FlowpanStorageAPI:
                     target_cid=target_cid,
                 )
                 if session.get("requires_sign"):
+                    logger.info(f"【Flowpan存储】计算 115 秒传二次校验: {target_name}")
                     sign_val = self._sha1_range(
                         local_path,
                         int(session.get("range_start") or 0),
@@ -104,6 +109,7 @@ class FlowpanStorageAPI:
                 session = self._api("/api/mp/storage/115/upload/start", session)
             else:
                 session = self._api("/api/mp/storage/115/upload/list-parts", session)
+            progress_callback(10)
             self._save_state(state_key, session)
             upload_id = session.get("upload_id")
             if not upload_id:
@@ -127,7 +133,7 @@ class FlowpanStorageAPI:
             total_parts = int(math.ceil(file_size / part_size))
             uploaded = sum(int(part.get("size") or 0) for part in parts)
             if uploaded:
-                progress_callback(min(99, uploaded * 100 / file_size))
+                progress_callback(self._upload_progress(uploaded, file_size))
 
             with local_path.open("rb") as fileobj:
                 for part_number in range(1, total_parts + 1):
@@ -137,6 +143,10 @@ class FlowpanStorageAPI:
                         continue
                     fileobj.seek(offset)
                     chunk = fileobj.read(chunk_size)
+                    if part_number == 1 or part_number == total_parts or part_number % 10 == 0:
+                        logger.info(
+                            f"【Flowpan存储】上传分片 {part_number}/{total_parts}: {target_name}"
+                        )
                     signed = self._api(
                         "/api/mp/storage/115/upload/part-url",
                         {"session": session, "part_number": part_number},
@@ -165,7 +175,7 @@ class FlowpanStorageAPI:
                     session["uploaded"] = uploaded + chunk_size
                     self._save_state(state_key, session)
                     uploaded += chunk_size
-                    progress_callback(min(99, uploaded * 100 / file_size))
+                    progress_callback(self._upload_progress(uploaded, file_size))
 
             session = self._api(
                 "/api/mp/storage/115/upload/complete",
@@ -357,11 +367,23 @@ class FlowpanStorageAPI:
         return value if value.endswith("/") else value + "/"
 
     @staticmethod
-    def _sha1_file(path: Path) -> str:
+    def _sha1_file(
+        path: Path,
+        progress_callback: Optional[Callable[[float], None]] = None,
+        base: float = 0,
+        span: float = 100,
+    ) -> str:
         digest = hashlib.sha1()
+        total = path.stat().st_size
+        done = 0
+        next_report = 16 * 1024 * 1024
         with path.open("rb") as fileobj:
             for chunk in iter(lambda: fileobj.read(1024 * 1024), b""):
                 digest.update(chunk)
+                done += len(chunk)
+                if progress_callback and (done >= next_report or done >= total):
+                    progress_callback(FlowpanStorageAPI._scaled_progress(done, total, base, span))
+                    next_report = done + 16 * 1024 * 1024
         return digest.hexdigest().upper()
 
     @staticmethod
@@ -381,6 +403,16 @@ class FlowpanStorageAPI:
         if remaining:
             raise IOError(f"range read incomplete, remaining={remaining}")
         return digest.hexdigest().upper()
+
+    @staticmethod
+    def _scaled_progress(done: int, total: int, base: float, span: float) -> float:
+        if total <= 0:
+            return base + span
+        return min(base + span, base + (done * span / total))
+
+    @staticmethod
+    def _upload_progress(uploaded: int, total: int) -> float:
+        return FlowpanStorageAPI._scaled_progress(uploaded, total, 10, 89)
 
     def _file_item_from_session(
         self,
