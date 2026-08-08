@@ -14,7 +14,7 @@ from app.utils.http import RequestUtils
 from .flowpan_storage import FlowpanStorageAPI
 
 
-DEFAULT_TARGET_STORAGES = "u115,115网盘Plus,Flowpan-115"
+DEFAULT_TARGET_STORAGES = "u115,115网盘Plus"
 DEFAULT_QUIET_SECONDS = 180
 DEFAULT_MAX_WAIT_SECONDS = 1800
 DEFAULT_STORAGE_NAME = "Flowpan-115"
@@ -24,7 +24,7 @@ UPLOAD_NOTIFY_DEDUPE_SECONDS = 300
 class FlowpanEventNotify(_PluginBase):
     """
     聚合 MoviePilot 的 115 转移完成事件并通知 Flowpan 执行事件增量同步。
-    Flowpan 原生存储桥上传成功时也会主动通知，避免秒传场景只依赖 MP 后续事件。
+    启用 Flowpan 原生存储桥后，上传成功时也会主动通知，避免秒传场景只依赖 MP 后续事件。
     """
 
     plugin_name = "Flowpan事件通知"
@@ -33,7 +33,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.7"
+    plugin_version = "1.1.8"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -97,6 +97,8 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_api = None
         if self._storage_bridge_enabled and self._storage_name:
             target_storages.add(self._storage_name.casefold())
+        elif self._storage_name:
+            target_storages.discard(self._storage_name.casefold())
         if self._storage_bridge_enabled:
             try:
                 storage_helper = StorageHelper()
