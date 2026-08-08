@@ -31,7 +31,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.5"
+    plugin_version = "1.1.6"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -182,6 +182,7 @@ class FlowpanEventNotify(_PluginBase):
             "rename_file": self.rename_file,
             "get_file_item": self.get_file_item,
             "get_parent_item": self.get_parent_item,
+            "get_item_strict": self.get_item_strict,
             "storage_usage": self.storage_usage,
             "support_transtype": self.support_transtype,
             "create_folder": self.create_folder,
@@ -441,6 +442,11 @@ class FlowpanEventNotify(_PluginBase):
 
     def get_item(self, storage: str, path: Path):
         return self.get_file_item(storage, path)
+
+    def get_item_strict(self, storage: str, path: Path):
+        if storage != self._storage_name or not self._storage_api:
+            return None
+        return self._storage_api.get_item_strict(path)
 
     def get_parent_item(self, fileitem: FileItem):
         if not self._storage_item(fileitem):

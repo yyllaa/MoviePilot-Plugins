@@ -224,6 +224,9 @@ class FlowpanStorageAPI:
         except Exception:
             return None
 
+    def get_item_strict(self, path: Path) -> Optional[FileItem]:
+        return self.get_item(path)
+
     def detail(self, fileitem: FileItem) -> Optional[FileItem]:
         return self.get_item(Path(fileitem.path))
 
