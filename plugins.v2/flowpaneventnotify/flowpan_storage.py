@@ -59,8 +59,10 @@ class FlowpanStorageAPI:
         logger.info(f"【Flowpan存储】开始原生上传: {local_path} -> {target_path}")
         try:
             progress_callback(1)
-            logger.info(f"【Flowpan存储】计算文件 SHA1: {target_name} size={file_size}")
-            file_sha1 = self._sha1_file(local_path, progress_callback, base=1, span=7)
+            logger.info(f"【Flowpan存储】计算文件 hash: {target_name} size={file_size}")
+            file_sha1, file_preid = self._sha1_file_pair(
+                local_path, progress_callback, base=1, span=7
+            )
             progress_callback(8)
             target_cid = self._target_cid(target_dir, target_dir_path)
             if target_cid is None:
@@ -80,6 +82,7 @@ class FlowpanStorageAPI:
                     name=target_name,
                     size=file_size,
                     sha1=file_sha1,
+                    preid=file_preid,
                     target_cid=target_cid,
                 )
                 if session.get("requires_sign"):
@@ -93,6 +96,7 @@ class FlowpanStorageAPI:
                         name=target_name,
                         size=file_size,
                         sha1=file_sha1,
+                        preid=file_preid,
                         target_cid=target_cid,
                         sign_key=session.get("sign_key"),
                         sign_val=sign_val,
@@ -301,6 +305,7 @@ class FlowpanStorageAPI:
         name: str,
         size: int,
         sha1: str,
+        preid: str,
         target_cid: int,
         sign_key: Optional[str] = None,
         sign_val: Optional[str] = None,
@@ -309,6 +314,7 @@ class FlowpanStorageAPI:
             "name": name,
             "size": size,
             "sha1": sha1,
+            "preid": preid,
             "target_cid": target_cid,
         }
         if sign_key:
@@ -367,24 +373,33 @@ class FlowpanStorageAPI:
         return value if value.endswith("/") else value + "/"
 
     @staticmethod
-    def _sha1_file(
+    def _sha1_file_pair(
         path: Path,
         progress_callback: Optional[Callable[[float], None]] = None,
         base: float = 0,
         span: float = 100,
-    ) -> str:
-        digest = hashlib.sha1()
+    ) -> tuple[str, str]:
+        full_digest = hashlib.sha1()
+        prefix_digest = hashlib.sha1()
         total = path.stat().st_size
         done = 0
+        prefix_limit = 128 * 1024 * 1024
+        prefix_done = 0
         next_report = 16 * 1024 * 1024
         with path.open("rb") as fileobj:
             for chunk in iter(lambda: fileobj.read(1024 * 1024), b""):
-                digest.update(chunk)
+                full_digest.update(chunk)
+                if prefix_done < prefix_limit:
+                    prefix_remaining = prefix_limit - prefix_done
+                    prefix_chunk = chunk[:prefix_remaining]
+                    if prefix_chunk:
+                        prefix_digest.update(prefix_chunk)
+                        prefix_done += len(prefix_chunk)
                 done += len(chunk)
                 if progress_callback and (done >= next_report or done >= total):
                     progress_callback(FlowpanStorageAPI._scaled_progress(done, total, base, span))
                     next_report = done + 16 * 1024 * 1024
-        return digest.hexdigest().upper()
+        return full_digest.hexdigest().upper(), prefix_digest.hexdigest().upper()
 
     @staticmethod
     def _sha1_range(path: Path, start: int, end: int) -> str:
