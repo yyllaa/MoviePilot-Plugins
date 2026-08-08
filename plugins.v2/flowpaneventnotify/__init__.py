@@ -31,7 +31,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.1"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -93,27 +93,26 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_part_size_mb = storage_part_size_mb
         self._storage_api = None
         if self._storage_bridge_enabled:
-            if not self._flowpan_url or not self._token:
-                logger.warning("【Flowpan事件通知】启用 MP 存储桥接前请先配置 Flowpan 地址和密钥")
-            else:
-                try:
-                    storage_helper = StorageHelper()
-                    storages = storage_helper.get_storagies()
-                    if not any(
-                        item.type == self._storage_name and item.name == self._storage_name
-                        for item in storages
-                    ):
-                        storage_helper.add_storage(
-                            storage=self._storage_name, name=self._storage_name, conf={}
-                        )
-                    self._storage_api = FlowpanStorageAPI(
-                        flowpan_url=self._flowpan_url,
-                        token=self._token,
-                        disk_name=self._storage_name,
-                        part_size_mb=self._storage_part_size_mb,
+            try:
+                storage_helper = StorageHelper()
+                storages = storage_helper.get_storagies()
+                if not any(
+                    item.type == self._storage_name and item.name == self._storage_name
+                    for item in storages
+                ):
+                    storage_helper.add_storage(
+                        storage=self._storage_name, name=self._storage_name, conf={}
                     )
-                except Exception as error:
-                    logger.error(f"【Flowpan事件通知】注册 Flowpan 存储失败: {error}")
+                self._storage_api = FlowpanStorageAPI(
+                    flowpan_url=self._flowpan_url,
+                    token=self._token,
+                    disk_name=self._storage_name,
+                    part_size_mb=self._storage_part_size_mb,
+                )
+                if not self._flowpan_url or not self._token:
+                    logger.warning("【Flowpan事件通知】Flowpan 存储已注册；实际上传前请配置 Flowpan 地址和密钥")
+            except Exception as error:
+                logger.error(f"【Flowpan事件通知】注册 Flowpan 存储失败: {error}")
         normalized = {
             **merged,
             "quiet_seconds": quiet_seconds,
