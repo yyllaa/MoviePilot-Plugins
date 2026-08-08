@@ -31,7 +31,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.3"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -185,6 +185,7 @@ class FlowpanEventNotify(_PluginBase):
             "storage_usage": self.storage_usage,
             "support_transtype": self.support_transtype,
             "create_folder": self.create_folder,
+            "get_folder": self.get_folder,
             "exists": self.exists,
             "get_item": self.get_item,
         }
@@ -407,6 +408,11 @@ class FlowpanEventNotify(_PluginBase):
         if not self._storage_item(fileitem):
             return None
         return self._storage_api.create_folder(fileitem, name)
+
+    def get_folder(self, storage: str, path: Path):
+        if storage != self._storage_name or not self._storage_api:
+            return None
+        return self._storage_api.get_folder(path)
 
     def upload_file(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None):
         if not self._storage_item(fileitem):

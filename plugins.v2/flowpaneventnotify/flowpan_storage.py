@@ -37,7 +37,7 @@ class FlowpanStorageAPI:
             / "flowpan-storage"
             / "upload-state"
         )
-        self.transtype = {}
+        self.transtype = {"copy": "复制", "move": "移动"}
 
     def upload(
         self,
@@ -182,14 +182,18 @@ class FlowpanStorageAPI:
     def create_folder(self, fileitem: FileItem, name: str) -> Optional[FileItem]:
         parent = self._dir_path(fileitem)
         folder_path = posixpath.join(parent.rstrip("/") or "/", name.strip())
+        return self.get_folder(Path(folder_path))
+
+    def get_folder(self, path: Path) -> Optional[FileItem]:
+        folder_path = self._normalize_dir_path(Path(path).as_posix())
         try:
             data = self._api("/api/mp/storage/115/dir/ensure", {"path": folder_path})
             return FileItem(
                 storage=self._disk_name,
                 fileid=str(data.get("cid") or 0),
                 path=self._ensure_trailing_slash(data.get("path") or folder_path),
-                name=name,
-                basename=name,
+                name="/" if folder_path == "/" else posixpath.basename(folder_path.rstrip("/")),
+                basename="/" if folder_path == "/" else posixpath.basename(folder_path.rstrip("/")),
                 type="dir",
             )
         except Exception as error:
@@ -277,10 +281,10 @@ class FlowpanStorageAPI:
             return StorageUsage(total=0, available=0)
 
     def support_transtype(self) -> dict:
-        return {}
+        return self.transtype
 
     def is_support_transtype(self, transtype: str) -> bool:
-        return False
+        return transtype in self.transtype
 
     def _upload_init(
         self,
@@ -337,6 +341,16 @@ class FlowpanStorageAPI:
         if not value.startswith("/"):
             value = "/" + value
         return value if value.endswith("/") else value + "/"
+
+    @staticmethod
+    def _normalize_dir_path(value: str) -> str:
+        value = str(value or "/").replace("\\", "/").strip()
+        if not value.startswith("/"):
+            value = "/" + value
+        cleaned = posixpath.normpath(value)
+        if cleaned in ("", "."):
+            cleaned = "/"
+        return cleaned
 
     @staticmethod
     def _ensure_trailing_slash(value: str) -> str:
