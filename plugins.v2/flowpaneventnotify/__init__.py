@@ -14,15 +14,17 @@ from app.utils.http import RequestUtils
 from .flowpan_storage import FlowpanStorageAPI
 
 
-DEFAULT_TARGET_STORAGES = "u115,115网盘Plus"
+DEFAULT_TARGET_STORAGES = "u115,115网盘Plus,Flowpan-115"
 DEFAULT_QUIET_SECONDS = 180
 DEFAULT_MAX_WAIT_SECONDS = 1800
 DEFAULT_STORAGE_NAME = "Flowpan-115"
+UPLOAD_NOTIFY_DEDUPE_SECONDS = 300
 
 
 class FlowpanEventNotify(_PluginBase):
     """
-    聚合 MoviePilot 的 115 转移完成事件并通知 Flowpan 执行事件增量同步
+    聚合 MoviePilot 的 115 转移完成事件并通知 Flowpan 执行事件增量同步。
+    Flowpan 原生存储桥上传成功时也会主动通知，避免秒传场景只依赖 MP 后续事件。
     """
 
     plugin_name = "Flowpan事件通知"
@@ -31,7 +33,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.6"
+    plugin_version = "1.1.7"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -57,6 +59,7 @@ class FlowpanEventNotify(_PluginBase):
         self._timer: Optional[Timer] = None
         self._batch_started_at = 0.0
         self._event_count = 0
+        self._upload_notify_cache: Dict[str, float] = {}
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -92,6 +95,8 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_name = storage_name or DEFAULT_STORAGE_NAME
         self._storage_part_size_mb = storage_part_size_mb
         self._storage_api = None
+        if self._storage_bridge_enabled and self._storage_name:
+            target_storages.add(self._storage_name.casefold())
         if self._storage_bridge_enabled:
             try:
                 storage_helper = StorageHelper()
@@ -418,7 +423,10 @@ class FlowpanEventNotify(_PluginBase):
     def upload_file(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None):
         if not self._storage_item(fileitem):
             return None
-        return self._storage_api.upload(fileitem, path, new_name)
+        uploaded_item = self._storage_api.upload(fileitem, path, new_name)
+        if uploaded_item:
+            self._notify_after_storage_upload(uploaded_item)
+        return uploaded_item
 
     def download_file(self, fileitem: FileItem, path: Path = None):
         if not self._storage_item(fileitem):
@@ -497,6 +505,13 @@ class FlowpanEventNotify(_PluginBase):
             return
         target_storage = self._event_target_storage(event)
         if target_storage.casefold() not in self._target_storages:
+            return
+        target_path = self._event_target_path(event)
+        if self._was_storage_upload_notified(target_storage, target_path):
+            logger.info(
+                "【Flowpan事件通知】跳过重复完成事件，原生存储上传已通知: %s",
+                target_path or target_storage,
+            )
             return
         now = monotonic()
         flush_count = 0
@@ -602,6 +617,50 @@ class FlowpanEventNotify(_PluginBase):
             event_count,
         )
 
+    def _notify_after_storage_upload(self, uploaded_item: FileItem) -> None:
+        if not self._enabled or not self._flowpan_url or not self._token:
+            return
+        storage = str(getattr(uploaded_item, "storage", "") or self._storage_name).strip()
+        path = str(getattr(uploaded_item, "path", "") or "").strip()
+        key = self._upload_notify_key(storage, path)
+        now = monotonic()
+        with self._lock:
+            self._prune_upload_notify_cache(now)
+            if key and now - self._upload_notify_cache.get(key, 0) < UPLOAD_NOTIFY_DEDUPE_SECONDS:
+                return
+            if key:
+                self._upload_notify_cache[key] = now
+        logger.info("【Flowpan事件通知】原生存储上传完成，立即通知 Flowpan 增量: %s", path or storage)
+        worker = Thread(target=self._notify_flowpan, args=(1,))
+        worker.daemon = True
+        worker.start()
+
+    def _was_storage_upload_notified(self, storage: str, path: str) -> bool:
+        key = self._upload_notify_key(storage, path)
+        if not key:
+            return False
+        now = monotonic()
+        with self._lock:
+            self._prune_upload_notify_cache(now)
+            return now - self._upload_notify_cache.get(key, 0) < UPLOAD_NOTIFY_DEDUPE_SECONDS
+
+    def _prune_upload_notify_cache(self, now: float) -> None:
+        expired = [
+            key
+            for key, notified_at in self._upload_notify_cache.items()
+            if now - notified_at >= UPLOAD_NOTIFY_DEDUPE_SECONDS
+        ]
+        for key in expired:
+            self._upload_notify_cache.pop(key, None)
+
+    @staticmethod
+    def _upload_notify_key(storage: str, path: str) -> str:
+        storage = str(storage or "").strip().casefold()
+        path = str(path or "").strip()
+        if not storage and not path:
+            return ""
+        return storage + "\x00" + path
+
     @staticmethod
     def _notify_url(raw_url: str) -> str:
         value = raw_url.strip().rstrip("/")
@@ -611,17 +670,30 @@ class FlowpanEventNotify(_PluginBase):
 
     @staticmethod
     def _event_target_storage(event: Event) -> str:
+        target_item = FlowpanEventNotify._event_target_item(event)
+        return str(FlowpanEventNotify._item_value(target_item, "storage") or "").strip()
+
+    @staticmethod
+    def _event_target_path(event: Event) -> str:
+        target_item = FlowpanEventNotify._event_target_item(event)
+        return str(FlowpanEventNotify._item_value(target_item, "path") or "").strip()
+
+    @staticmethod
+    def _event_target_item(event: Event) -> Any:
         data = event.event_data if event else None
-        if not isinstance(data, dict):
-            return ""
-        transfer_info = data.get("transferinfo")
-        if isinstance(transfer_info, dict):
-            target_item = transfer_info.get("target_item")
+        if isinstance(data, dict):
+            transfer_info = data.get("transferinfo")
         else:
-            target_item = getattr(transfer_info, "target_item", None)
-        if isinstance(target_item, dict):
-            return str(target_item.get("storage") or "").strip()
-        return str(getattr(target_item, "storage", "") or "").strip()
+            transfer_info = getattr(data, "transferinfo", None)
+        if isinstance(transfer_info, dict):
+            return transfer_info.get("target_item") or transfer_info.get("target_diritem")
+        return getattr(transfer_info, "target_item", None) or getattr(transfer_info, "target_diritem", None)
+
+    @staticmethod
+    def _item_value(item: Any, key: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(key)
+        return getattr(item, key, None)
 
     @staticmethod
     def _parse_target_storages(raw: Any) -> Set[str]:
