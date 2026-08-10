@@ -270,18 +270,33 @@ class FlowpanStorageAPI:
         return False
 
     def delete(self, fileitem: FileItem) -> bool:
-        logger.warning("【Flowpan存储】暂不支持从 MoviePilot 删除 115 文件")
-        return False
+        file_id = self._file_id(fileitem)
+        if not file_id:
+            return False
+        try:
+            self._api("/api/mp/storage/115/delete", {"ids": [file_id]})
+            return True
+        except Exception as error:
+            logger.error(f"【Flowpan存储】删除失败 {getattr(fileitem, 'path', '')}: {error}")
+            return False
 
     def rename(self, fileitem: FileItem, name: str) -> bool:
-        logger.warning("【Flowpan存储】暂不支持从 MoviePilot 重命名 115 文件")
-        return False
+        file_id = self._file_id(fileitem)
+        name = (name or "").strip()
+        if not file_id or not name:
+            return False
+        try:
+            self._api("/api/mp/storage/115/rename", {"id": file_id, "name": name})
+            return True
+        except Exception as error:
+            logger.error(f"【Flowpan存储】重命名失败 {getattr(fileitem, 'path', '')}: {error}")
+            return False
 
     def copy(self, fileitem: FileItem, path: Path, new_name: str) -> bool:
-        return False
+        return self._copy_or_move(fileitem, path, new_name, action="copy")
 
     def move(self, fileitem: FileItem, path: Path, new_name: str) -> bool:
-        return False
+        return self._copy_or_move(fileitem, path, new_name, action="move")
 
     def download(self, fileitem: FileItem, path: Path = None) -> Optional[Path]:
         return None
@@ -302,6 +317,40 @@ class FlowpanStorageAPI:
 
     def is_support_transtype(self, transtype: str) -> bool:
         return transtype in self.transtype
+
+    def _copy_or_move(
+        self,
+        fileitem: FileItem,
+        target_dir: Path,
+        new_name: Optional[str],
+        action: str,
+    ) -> bool:
+        file_id = self._file_id(fileitem)
+        if not file_id:
+            return False
+        target_dir_path = self._normalize_dir_path(Path(target_dir).as_posix())
+        target_name = (new_name or getattr(fileitem, "name", "") or Path(getattr(fileitem, "path", "")).name).strip()
+        if not target_name:
+            return False
+        try:
+            folder = self._api("/api/mp/storage/115/dir/ensure", {"path": target_dir_path})
+            target_cid = int(folder.get("cid") or 0)
+            endpoint = "/api/mp/storage/115/copy" if action == "copy" else "/api/mp/storage/115/move"
+            if action == "move":
+                self._api(
+                    "/api/mp/storage/115/move/check-conflict",
+                    {"ids": [file_id], "parent_id": target_cid},
+                )
+            self._api(endpoint, {"ids": [file_id], "parent_id": target_cid})
+            current_name = (getattr(fileitem, "name", "") or Path(getattr(fileitem, "path", "")).name).strip()
+            if target_name and target_name != current_name:
+                target_item = self.get_item(Path(posixpath.join(target_dir_path.rstrip("/") or "/", current_name)))
+                if target_item is not None:
+                    return self.rename(target_item, target_name)
+            return True
+        except Exception as error:
+            logger.error(f"【Flowpan存储】{self.transtype.get(action, action)}失败 {getattr(fileitem, 'path', '')}: {error}")
+            return False
 
     def _upload_init(
         self,
@@ -353,6 +402,17 @@ class FlowpanStorageAPI:
         except Exception as error:
             logger.error(f"【Flowpan存储】解析目标目录失败 {target_dir_path}: {error}")
             return None
+
+    @staticmethod
+    def _file_id(fileitem: FileItem) -> Optional[int]:
+        try:
+            value = getattr(fileitem, "fileid", None)
+            if value not in (None, ""):
+                parsed = int(value)
+                return parsed if parsed > 0 else None
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _dir_path(fileitem: FileItem) -> str:

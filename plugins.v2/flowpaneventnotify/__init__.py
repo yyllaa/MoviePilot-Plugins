@@ -11,6 +11,14 @@ from app.schemas import FileItem, StorageOperSelectionEventData
 from app.schemas.types import ChainEventType, EventType
 from app.utils.http import RequestUtils
 
+from .agent_tools import (
+    FlowpanStorageCheckTool,
+    FlowpanStorageFolderTool,
+    FlowpanStorageItemTool,
+    FlowpanStorageListTool,
+    FlowpanStorageManageTool,
+    FlowpanStorageUsageTool,
+)
 from .flowpan_storage import FlowpanStorageAPI
 
 
@@ -33,7 +41,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.8"
+    plugin_version = "1.1.9"
     plugin_author = "Flowpan"
     author_url = ""
     plugin_config_prefix = "flowpaneventnotify_"
@@ -197,6 +205,21 @@ class FlowpanEventNotify(_PluginBase):
             "exists": self.exists,
             "get_item": self.get_item,
         }
+
+    def get_agent_tools(self) -> List[Type]:
+        """
+        让 MoviePilot 智能体可以直接调用 Flowpan 存储桥接能力。
+        """
+        if not self._storage_api:
+            return []
+        return [
+            FlowpanStorageUsageTool,
+            FlowpanStorageListTool,
+            FlowpanStorageItemTool,
+            FlowpanStorageCheckTool,
+            FlowpanStorageFolderTool,
+            FlowpanStorageManageTool,
+        ]
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
