@@ -1,5 +1,0 @@
-p115client==0.0.9.3.11
-httpx[http2]
-oss2
-cryptography
-qrcode

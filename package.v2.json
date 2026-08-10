@@ -19,18 +19,5 @@
       "v1.1.0": "新增Flowpan 115原生上传桥接，支持秒传、分片直传OSS和断点恢复",
       "v1.0.0": "初始版本"
     }
-  },
-  "P115CookieStorage": {
-    "name": "115 Cookie存储",
-    "description": "基于115 Cookie扫码登录的MoviePilot独立存储模块，支持文件列表、秒传/分片上传、下载和整理。",
-    "labels": "云盘",
-    "version": "1.0.0",
-    "release": true,
-    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
-    "author": "Flowpan",
-    "level": 1,
-    "history": {
-      "v1.0.0": "新增独立115 Cookie存储插件：扫码登录写入Cookie，参考MP既有115存储接口能力，不依赖Flowpan服务，不使用OpenAPI。"
-    }
   }
 }
