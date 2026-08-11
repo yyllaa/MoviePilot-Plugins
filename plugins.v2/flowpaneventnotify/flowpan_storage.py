@@ -248,6 +248,36 @@ class FlowpanStorageAPI:
             logger.warning(f"【Flowpan存储】浏览目录失败 {getattr(fileitem, 'path', '/')}: {error}")
             return []
 
+    def search(
+        self,
+        keyword: str,
+        cid: int = 0,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        keyword = str(keyword or "").strip()
+        payload = {
+            "keyword": keyword,
+            "cid": max(int(cid or 0), 0),
+            "offset": max(int(offset or 0), 0),
+            "limit": max(1, min(int(limit or 100), 200)),
+            "storage": self._disk_name,
+        }
+        data = self._api("/api/mp/storage/115/search", payload)
+        items = [
+            item
+            for item in (self._file_item_from_data(raw) for raw in data.get("items") or [])
+            if item is not None
+        ]
+        return {
+            "keyword": keyword,
+            "cid": payload["cid"],
+            "offset": int(data.get("offset") or payload["offset"]),
+            "limit": int(data.get("limit") or payload["limit"]),
+            "total": int(data.get("total") or len(items)),
+            "items": items,
+        }
+
     def iter_files(self, fileitem: FileItem) -> List[FileItem]:
         result: List[FileItem] = []
         for item in self.list(fileitem):

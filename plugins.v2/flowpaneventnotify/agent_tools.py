@@ -77,6 +77,35 @@ def _resolve_item(plugin: Any, path: str, strict: bool = False):
     return plugin.get_item(_storage_name(plugin), path_obj)
 
 
+def _item_from_file_id(plugin: Any, file_id: Optional[int], path: str = "", name: str = "") -> Optional[FileItem]:
+    if not file_id:
+        return None
+    item_name = (name or Path(path or "").name or str(file_id)).strip()
+    return FileItem(
+        storage=_storage_name(plugin),
+        fileid=str(file_id),
+        path=path or item_name,
+        name=item_name,
+        basename=Path(item_name).stem,
+        extension=Path(item_name).suffix[1:] or None,
+        type="file",
+    )
+
+
+def _resolve_item_or_id(
+    plugin: Any,
+    path: str = "",
+    file_id: Optional[int] = None,
+    strict: bool = False,
+    name: str = "",
+) -> Optional[FileItem]:
+    if file_id:
+        return _item_from_file_id(plugin, file_id, path=path, name=name)
+    if path:
+        return _resolve_item(plugin, path, strict=strict)
+    return None
+
+
 def _serialize_item(item: Optional[FileItem]) -> Optional[dict[str, Any]]:
     if item is None:
         return None
@@ -315,6 +344,69 @@ class FlowpanStorageCheckTool(MoviePilotTool):
             return _dump({"success": False, "message": str(err)})
 
 
+class FlowpanStorageSearchInput(BaseModel):
+    """搜索 115 文件的输入参数。"""
+
+    keyword: str = Field(..., description="搜索关键词")
+    path: str = Field(default="/", description="搜索范围目录，默认根目录")
+    offset: int = Field(default=0, description="分页偏移")
+    limit: int = Field(default=100, description="最多返回多少条，范围 1-200")
+
+
+class FlowpanStorageSearchTool(MoviePilotTool):
+    name: str = "flowpan_storage_search"
+    tags: list[str] = _tool_tags("Read", "File", "Directory", "Admin")
+    description: str = "搜索 Flowpan 115 存储中的文件和目录，返回可用于 rename/delete 的 file_id。"
+    require_admin: bool = True
+    args_schema: Type[BaseModel] = FlowpanStorageSearchInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        return f"搜索 Flowpan 115: {kwargs.get('keyword', '')}"
+
+    async def run(self, keyword: str, path: str = "/", offset: int = 0, limit: int = 100, **kwargs) -> str:
+        plugin, error = _get_plugin()
+        if not plugin:
+            return _dump({"success": False, "message": error})
+
+        def _sync():
+            keyword_value = (keyword or "").strip()
+            if not keyword_value:
+                return {"success": False, "message": "搜索关键词不能为空"}
+            scope = _resolve_item(plugin, path or "/", strict=False)
+            if scope and getattr(scope, "type", None) != "dir":
+                scope = plugin.get_parent_item(scope)
+            cid = 0
+            if scope and getattr(scope, "fileid", None) not in (None, ""):
+                try:
+                    cid = int(scope.fileid)
+                except Exception:
+                    cid = 0
+            result = plugin._storage_api.search(
+                keyword=keyword_value,
+                cid=cid,
+                offset=max(int(offset or 0), 0),
+                limit=max(1, min(int(limit or 100), 200)),
+            )
+            return {
+                "success": True,
+                "keyword": keyword_value,
+                "path": path or "/",
+                "cid": cid,
+                "total": result.get("total"),
+                "offset": result.get("offset"),
+                "limit": result.get("limit"),
+                "items": [_serialize_item(item) for item in result.get("items") or []],
+            }
+
+        try:
+            result = await run_agent_blocking("storage", _sync)
+            logger.info("执行工具: %s", self.name)
+            return _dump(result)
+        except Exception as err:
+            logger.error("搜索 Flowpan 115 失败: %s", err, exc_info=True)
+            return _dump({"success": False, "message": str(err)})
+
+
 class FlowpanStorageFolderInput(BaseModel):
     """确保目录存在的输入参数。"""
 
@@ -358,7 +450,11 @@ class FlowpanStorageManageInput(BaseModel):
         ...,
         description="rename: 重命名；delete: 删除；upload: 上传本地文件到指定目录",
     )
-    path: str = Field(..., description="目标文件路径，upload 时表示目标目录路径")
+    path: str = Field(default="", description="目标文件路径，upload 时表示目标目录路径；rename/delete 可为空并改用 file_id")
+    file_id: Optional[int] = Field(
+        default=None,
+        description="115 文件 ID。rename/delete 推荐优先传 file_id，避免路径重名或路径解析失败",
+    )
     name: Optional[str] = Field(
         default=None,
         description="rename 的新文件名，upload 时作为可选的新文件名",
@@ -384,7 +480,8 @@ class FlowpanStorageManageTool(MoviePilotTool):
     async def run(
         self,
         action: Literal["rename", "delete", "upload"],
-        path: str,
+        path: str = "",
+        file_id: Optional[int] = None,
         name: Optional[str] = None,
         local_path: Optional[str] = None,
         **kwargs,
@@ -395,9 +492,9 @@ class FlowpanStorageManageTool(MoviePilotTool):
 
         def _sync():
             if action == "rename":
-                item = _resolve_item(plugin, path, strict=True)
+                item = _resolve_item_or_id(plugin, path=path, file_id=file_id, strict=True, name=name or "")
                 if not item:
-                    return {"success": False, "message": f"路径不存在: {path}"}
+                    return {"success": False, "message": "rename 需要提供有效 path 或 file_id"}
                 new_name = (name or "").strip()
                 if not new_name:
                     return {"success": False, "message": "rename 需要提供新文件名"}
@@ -406,18 +503,20 @@ class FlowpanStorageManageTool(MoviePilotTool):
                     "success": bool(success),
                     "action": action,
                     "path": path,
+                    "file_id": file_id,
                     "name": new_name,
                 }
 
             if action == "delete":
-                item = _resolve_item(plugin, path, strict=True)
+                item = _resolve_item_or_id(plugin, path=path, file_id=file_id, strict=True)
                 if not item:
-                    return {"success": False, "message": f"路径不存在: {path}"}
+                    return {"success": False, "message": "delete 需要提供有效 path 或 file_id"}
                 success = plugin.delete_file(item)
                 return {
                     "success": bool(success),
                     "action": action,
                     "path": path,
+                    "file_id": file_id,
                 }
 
             if action == "upload":
@@ -451,6 +550,7 @@ __all__ = [
     "FlowpanStorageListTool",
     "FlowpanStorageItemTool",
     "FlowpanStorageCheckTool",
+    "FlowpanStorageSearchTool",
     "FlowpanStorageFolderTool",
     "FlowpanStorageManageTool",
 ]

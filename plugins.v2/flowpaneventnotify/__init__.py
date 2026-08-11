@@ -17,6 +17,7 @@ from .agent_tools import (
     FlowpanStorageItemTool,
     FlowpanStorageListTool,
     FlowpanStorageManageTool,
+    FlowpanStorageSearchTool,
     FlowpanStorageUsageTool,
 )
 from .flowpan_storage import FlowpanStorageAPI
@@ -41,7 +42,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.11"
+    plugin_version = "1.1.12"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -190,6 +191,7 @@ class FlowpanEventNotify(_PluginBase):
             return {}
         return {
             "list_files": self.list_files,
+            "search_files": self.search_files,
             "any_files": self.any_files,
             "download_file": self.download_file,
             "upload_file": self.upload_file,
@@ -217,6 +219,7 @@ class FlowpanEventNotify(_PluginBase):
             FlowpanStorageListTool,
             FlowpanStorageItemTool,
             FlowpanStorageCheckTool,
+            FlowpanStorageSearchTool,
             FlowpanStorageFolderTool,
             FlowpanStorageManageTool,
         ]
@@ -429,6 +432,16 @@ class FlowpanEventNotify(_PluginBase):
         if recursion:
             return self._storage_api.iter_files(fileitem)
         return self._storage_api.list(fileitem)
+
+    def search_files(self, storage: str, keyword: str, path: str = "/", offset: int = 0, limit: int = 100):
+        if storage != self._storage_name or not self._storage_api:
+            return None
+        try:
+            scope = self._storage_api.get_item(Path(path or "/"))
+            cid = int(scope.fileid) if scope and getattr(scope, "fileid", None) not in (None, "") else 0
+        except Exception:
+            cid = 0
+        return self._storage_api.search(keyword=keyword, cid=cid, offset=offset, limit=limit)
 
     def any_files(self, fileitem: FileItem, extensions: list = None):
         if not self._storage_item(fileitem):
