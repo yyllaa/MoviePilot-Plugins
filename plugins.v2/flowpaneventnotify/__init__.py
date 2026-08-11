@@ -42,8 +42,8 @@ class FlowpanEventNotify(_PluginBase):
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
     plugin_version = "1.1.10"
-    plugin_author = "Flowpan"
-    author_url = ""
+    plugin_author = "yyllaa"
+    author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
     plugin_order = 99
     auth_level = 1
