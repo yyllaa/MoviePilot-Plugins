@@ -3,11 +3,12 @@
     "name": "Flowpan事件通知",
     "description": "聚合115转移完成事件并通知Flowpan更新，支持Flowpan 115原生上传桥接",
     "labels": "STRM",
-    "version": "1.1.14",
+    "version": "1.1.15",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "history": {
+      "v1.1.15": "目录浏览优先使用 115 cid，减少路径反查导致的目录选择卡顿",
       "v1.1.14": "新增目录浏览 5 分钟内存缓存，改名、删除、移动、复制、上传和建目录后自动清理缓存",
       "v1.1.13": "Bump version to force MoviePilot refresh with real rename/delete/search tools",
       "v1.1.12": "新增 Agent 搜索工具，rename/delete 支持按 115 文件 ID 操作",

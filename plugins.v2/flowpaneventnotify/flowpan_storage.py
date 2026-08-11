@@ -249,9 +249,16 @@ class FlowpanStorageAPI:
         if cached is not None:
             return cached
         try:
+            payload = {
+                "path": getattr(fileitem, "path", "/") or "/",
+                "storage": self._disk_name,
+            }
+            file_id = self._file_id(fileitem)
+            if file_id is not None:
+                payload["cid"] = file_id
             data = self._api(
                 "/api/mp/storage/115/dir/list",
-                {"path": getattr(fileitem, "path", "/") or "/", "storage": self._disk_name},
+                payload,
             )
             items = [
                 item
@@ -402,6 +409,9 @@ class FlowpanStorageAPI:
             return False
 
     def _list_cache_key(self, fileitem: FileItem) -> str:
+        file_id = self._file_id(fileitem)
+        if file_id is not None:
+            return f"{self._disk_name}:cid:{file_id}"
         path = self._normalize_dir_path(getattr(fileitem, "path", "/") or "/")
         return f"{self._disk_name}:{path}"
 
