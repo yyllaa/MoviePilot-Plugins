@@ -42,7 +42,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.13"
+    plugin_version = "1.1.14"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"

@@ -3,8 +3,10 @@ import json
 import math
 import os
 import posixpath
+import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from threading import RLock
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -37,6 +39,9 @@ class FlowpanStorageAPI:
             / "flowpan-storage"
             / "upload-state"
         )
+        self._list_cache: Dict[str, Tuple[float, List[FileItem]]] = {}
+        self._list_cache_lock = RLock()
+        self._list_cache_ttl = 300
         self.transtype = {"copy": "复制", "move": "移动"}
 
     def upload(
@@ -105,6 +110,7 @@ class FlowpanStorageAPI:
             if session.get("reused"):
                 progress_callback(100)
                 self._drop_state(state_key)
+                self._clear_list_cache()
                 logger.info(f"【Flowpan存储】{target_name} 秒传成功")
                 return self._file_item_from_session(target_path, target_name, file_size, session)
 
@@ -187,6 +193,7 @@ class FlowpanStorageAPI:
             )
             progress_callback(100)
             self._drop_state(state_key)
+            self._clear_list_cache()
             logger.info(f"【Flowpan存储】{target_name} 上传完成")
             return self._file_item_from_session(target_path, target_name, file_size, session)
         except Exception as error:
@@ -196,7 +203,10 @@ class FlowpanStorageAPI:
     def create_folder(self, fileitem: FileItem, name: str) -> Optional[FileItem]:
         parent = self._dir_path(fileitem)
         folder_path = posixpath.join(parent.rstrip("/") or "/", name.strip())
-        return self.get_folder(Path(folder_path))
+        item = self.get_folder(Path(folder_path))
+        if item is not None:
+            self._clear_list_cache()
+        return item
 
     def get_folder(self, path: Path) -> Optional[FileItem]:
         folder_path = self._normalize_dir_path(Path(path).as_posix())
@@ -234,16 +244,22 @@ class FlowpanStorageAPI:
         return self.get_item(Path(fileitem.path)) is not None
 
     def list(self, fileitem: FileItem) -> List[FileItem]:
+        cache_key = self._list_cache_key(fileitem)
+        cached = self._get_list_cache(cache_key)
+        if cached is not None:
+            return cached
         try:
             data = self._api(
                 "/api/mp/storage/115/dir/list",
                 {"path": getattr(fileitem, "path", "/") or "/", "storage": self._disk_name},
             )
-            return [
+            items = [
                 item
                 for item in (self._file_item_from_data(raw) for raw in data.get("items") or [])
                 if item is not None
             ]
+            self._set_list_cache(cache_key, items)
+            return items
         except Exception as error:
             logger.warning(f"【Flowpan存储】浏览目录失败 {getattr(fileitem, 'path', '/')}: {error}")
             return []
@@ -305,6 +321,7 @@ class FlowpanStorageAPI:
             return False
         try:
             self._api("/api/mp/storage/115/delete", {"ids": [file_id]})
+            self._clear_list_cache()
             return True
         except Exception as error:
             logger.error(f"【Flowpan存储】删除失败 {getattr(fileitem, 'path', '')}: {error}")
@@ -317,6 +334,7 @@ class FlowpanStorageAPI:
             return False
         try:
             self._api("/api/mp/storage/115/rename", {"id": file_id, "name": name})
+            self._clear_list_cache()
             return True
         except Exception as error:
             logger.error(f"【Flowpan存储】重命名失败 {getattr(fileitem, 'path', '')}: {error}")
@@ -372,6 +390,7 @@ class FlowpanStorageAPI:
                     {"ids": [file_id], "parent_id": target_cid},
                 )
             self._api(endpoint, {"ids": [file_id], "parent_id": target_cid})
+            self._clear_list_cache()
             current_name = (getattr(fileitem, "name", "") or Path(getattr(fileitem, "path", "")).name).strip()
             if target_name and target_name != current_name:
                 target_item = self.get_item(Path(posixpath.join(target_dir_path.rstrip("/") or "/", current_name)))
@@ -381,6 +400,30 @@ class FlowpanStorageAPI:
         except Exception as error:
             logger.error(f"【Flowpan存储】{self.transtype.get(action, action)}失败 {getattr(fileitem, 'path', '')}: {error}")
             return False
+
+    def _list_cache_key(self, fileitem: FileItem) -> str:
+        path = self._normalize_dir_path(getattr(fileitem, "path", "/") or "/")
+        return f"{self._disk_name}:{path}"
+
+    def _get_list_cache(self, key: str) -> Optional[List[FileItem]]:
+        now = time.time()
+        with self._list_cache_lock:
+            cached = self._list_cache.get(key)
+            if not cached:
+                return None
+            cached_at, items = cached
+            if now - cached_at < self._list_cache_ttl:
+                return list(items)
+            self._list_cache.pop(key, None)
+        return None
+
+    def _set_list_cache(self, key: str, items: List[FileItem]) -> None:
+        with self._list_cache_lock:
+            self._list_cache[key] = (time.time(), list(items))
+
+    def _clear_list_cache(self) -> None:
+        with self._list_cache_lock:
+            self._list_cache.clear()
 
     def _upload_init(
         self,
