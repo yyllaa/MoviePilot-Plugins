@@ -3,11 +3,12 @@
     "name": "Flowpan事件通知",
     "description": "聚合115转移完成事件并通知Flowpan更新，支持Flowpan 115原生上传桥接",
     "labels": "STRM",
-    "version": "1.1.10",
+    "version": "1.1.11",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "history": {
+      "v1.1.11": "修复 Type 未导入导致插件加载失败",
       "v1.1.10": "修复 ToolTag.Storage 兼容性，避免 MP 安装插件时加载失败",
       "v1.1.9": "新增 get_agent_tools，向 MoviePilot 智能体开放 Flowpan 115 存储桥的容量、浏览、查询、建目录、重命名、删除和上传能力",
       "v1.1.8": "未启用Flowpan存储桥时恢复原始监听目标，避免误把Flowpan-115带入默认通知",

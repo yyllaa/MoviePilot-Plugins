@@ -1,7 +1,7 @@
 from threading import Lock, Thread, Timer
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
 from app.core.event import Event, eventmanager
 from app.log import logger
@@ -41,7 +41,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.10"
+    plugin_version = "1.1.11"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
