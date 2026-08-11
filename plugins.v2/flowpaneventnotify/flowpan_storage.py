@@ -28,6 +28,7 @@ class FlowpanStorageAPI:
         token: str,
         disk_name: str = "Flowpan-115",
         part_size_mb: int = 10,
+        list_cache_ttl: int = 300,
     ) -> None:
         self._flowpan_url = (flowpan_url or "").strip().rstrip("/")
         self._token = (token or "").strip()
@@ -41,7 +42,11 @@ class FlowpanStorageAPI:
         )
         self._list_cache: Dict[str, Tuple[float, List[FileItem]]] = {}
         self._list_cache_lock = RLock()
-        self._list_cache_ttl = 300
+        try:
+            cache_ttl = int(list_cache_ttl)
+        except (TypeError, ValueError):
+            cache_ttl = 300
+        self._list_cache_ttl = max(0, min(cache_ttl, 86400))
         self.transtype = {"copy": "复制", "move": "移动"}
 
     def upload(
@@ -358,7 +363,7 @@ class FlowpanStorageAPI:
 
     def storage_usage(self) -> StorageUsage:
         try:
-            data = self._api("/api/mp/storage/115/usage", {})
+            data = self.probe_connection()
             return StorageUsage(
                 total=float(data.get("total") or 0),
                 available=float(data.get("available") or 0),
@@ -366,6 +371,58 @@ class FlowpanStorageAPI:
         except Exception as error:
             logger.warning(f"【Flowpan存储】读取容量失败: {error}")
             return StorageUsage(total=0, available=0)
+
+    def probe_connection(self) -> Dict[str, Any]:
+        """
+        探测 Flowpan / 115 存储桥连通性与鉴权状态。
+        """
+        return self._api("/api/mp/storage/115/usage", {})
+
+    def list_cache_stats(self) -> Dict[str, Any]:
+        """
+        返回当前目录缓存统计信息。
+        """
+        now = time.time()
+        with self._list_cache_lock:
+            entries: List[Dict[str, Any]] = []
+            expired_keys: List[str] = []
+            for key, cached in self._list_cache.items():
+                cached_at, items = cached
+                age_seconds = max(0.0, now - cached_at)
+                if self._list_cache_ttl <= 0:
+                    expired_keys.append(key)
+                    continue
+                if age_seconds >= self._list_cache_ttl:
+                    expired_keys.append(key)
+                    continue
+                entries.append(
+                    {
+                        "key": key,
+                        "cached_at": int(cached_at),
+                        "age_seconds": int(age_seconds),
+                        "remaining_seconds": int(max(self._list_cache_ttl - age_seconds, 0)),
+                        "item_count": len(items),
+                    }
+                )
+            for key in expired_keys:
+                self._list_cache.pop(key, None)
+            entries.sort(key=lambda item: item["cached_at"], reverse=True)
+            latest_cached_at = entries[0]["cached_at"] if entries else 0
+            oldest_cached_at = entries[-1]["cached_at"] if entries else 0
+            return {
+                "enabled": self._list_cache_ttl > 0,
+                "ttl_seconds": self._list_cache_ttl,
+                "entry_count": len(entries),
+                "latest_cached_at": latest_cached_at,
+                "oldest_cached_at": oldest_cached_at,
+                "entries": entries,
+            }
+
+    def clear_list_cache(self) -> None:
+        """
+        清空目录缓存。
+        """
+        self._clear_list_cache()
 
     def support_transtype(self) -> dict:
         return self.transtype
@@ -416,6 +473,8 @@ class FlowpanStorageAPI:
         return f"{self._disk_name}:{path}"
 
     def _get_list_cache(self, key: str) -> Optional[List[FileItem]]:
+        if self._list_cache_ttl <= 0:
+            return None
         now = time.time()
         with self._list_cache_lock:
             cached = self._list_cache.get(key)
@@ -428,6 +487,8 @@ class FlowpanStorageAPI:
         return None
 
     def _set_list_cache(self, key: str, items: List[FileItem]) -> None:
+        if self._list_cache_ttl <= 0:
+            return
         with self._list_cache_lock:
             self._list_cache[key] = (time.time(), list(items))
 

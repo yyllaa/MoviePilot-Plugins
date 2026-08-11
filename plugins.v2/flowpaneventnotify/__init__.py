@@ -1,4 +1,5 @@
-﻿from threading import Lock, Thread, Timer
+﻿import time
+from threading import Lock, Thread, Timer
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Dict, List, Optional, Set, Tuple, Type
@@ -27,6 +28,7 @@ DEFAULT_TARGET_STORAGES = "u115,115网盘Plus"
 DEFAULT_QUIET_SECONDS = 180
 DEFAULT_MAX_WAIT_SECONDS = 1800
 DEFAULT_STORAGE_NAME = "Flowpan-115"
+DEFAULT_STORAGE_CACHE_TTL_SECONDS = 300
 UPLOAD_NOTIFY_DEDUPE_SECONDS = 300
 
 
@@ -42,7 +44,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.15"
+    plugin_version = "1.1.16"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -63,6 +65,7 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_bridge_enabled = False
         self._storage_name = DEFAULT_STORAGE_NAME
         self._storage_part_size_mb = 10
+        self._storage_cache_ttl_seconds = DEFAULT_STORAGE_CACHE_TTL_SECONDS
         self._storage_api: Optional[FlowpanStorageAPI] = None
         self._lock = Lock()
         self._timer: Optional[Timer] = None
@@ -94,6 +97,12 @@ class FlowpanEventNotify(_PluginBase):
         storage_part_size_mb = self._bounded_int(
             merged.get("storage_part_size_mb"), 10, 5, 128
         )
+        storage_cache_ttl_seconds = self._bounded_int(
+            merged.get("storage_cache_ttl_seconds"),
+            DEFAULT_STORAGE_CACHE_TTL_SECONDS,
+            0,
+            86400,
+        )
         self._enabled = bool(merged.get("enabled"))
         self._flowpan_url = str(merged.get("flowpan_url") or "").strip()
         self._token = str(merged.get("token") or "").strip()
@@ -103,6 +112,7 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_bridge_enabled = bool(merged.get("storage_bridge_enabled"))
         self._storage_name = storage_name or DEFAULT_STORAGE_NAME
         self._storage_part_size_mb = storage_part_size_mb
+        self._storage_cache_ttl_seconds = storage_cache_ttl_seconds
         self._storage_api = None
         if self._storage_bridge_enabled and self._storage_name:
             target_storages.add(self._storage_name.casefold())
@@ -124,6 +134,7 @@ class FlowpanEventNotify(_PluginBase):
                     token=self._token,
                     disk_name=self._storage_name,
                     part_size_mb=self._storage_part_size_mb,
+                    list_cache_ttl=self._storage_cache_ttl_seconds,
                 )
                 if not self._flowpan_url or not self._token:
                     logger.warning("【Flowpan事件通知】Flowpan 存储已注册；实际上传前请配置 Flowpan 地址和密钥")
@@ -136,6 +147,7 @@ class FlowpanEventNotify(_PluginBase):
             "target_storages": ",".join(sorted(target_storages)),
             "storage_name": self._storage_name,
             "storage_part_size_mb": storage_part_size_mb,
+            "storage_cache_ttl_seconds": storage_cache_ttl_seconds,
         }
         if config and normalized != config:
             self.update_config(normalized)
@@ -161,11 +173,20 @@ class FlowpanEventNotify(_PluginBase):
 
     def get_api(self) -> List[Dict[str, Any]]:
         """
-        返回插件 API 列表，本插件无自定义 API
+        返回插件 API 列表
 
-        :return List: 空 API 列表
+        :return List: 插件 API 列表
         """
-        return []
+        return [
+            {
+                "path": "/test_connection",
+                "endpoint": self.test_connection,
+                "auth": "bear",
+                "methods": ["POST"],
+                "summary": "连接测试",
+                "description": "测试 Flowpan 115 存储桥连通性、鉴权与目录缓存状态",
+            }
+        ]
 
     def get_service(self) -> List[Dict[str, Any]]:
         """
@@ -177,11 +198,211 @@ class FlowpanEventNotify(_PluginBase):
 
     def get_page(self) -> List[Dict[str, Any]]:
         """
-        返回插件页面列表，本插件无数据页面
+        返回插件页面列表
 
-        :return List: 空页面列表
+        :return List: 插件页面列表
         """
-        return []
+        connection = self._build_connection_summary()
+        cache = self._build_cache_summary()
+        cache_entries = cache.get("entries") or []
+        return [
+            {
+                "component": "VCard",
+                "props": {"variant": "outlined", "class": "mb-3"},
+                "content": [
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "pa-6"},
+                        "content": [
+                            {
+                                "component": "div",
+                                "props": {"class": "text-h6 mb-2"},
+                                "text": "连接测试",
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-body-2 text-medium-emphasis mb-4"},
+                                "text": "测试 Flowpan 地址、事件密钥和 115 存储桥是否可用。",
+                            },
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VAlert",
+                                                "props": {
+                                                    "type": connection["tone"],
+                                                    "variant": "tonal",
+                                                    "density": "compact",
+                                                },
+                                                "text": connection["text"],
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VAlert",
+                                                "props": {
+                                                    "type": cache["tone"],
+                                                    "variant": "tonal",
+                                                    "density": "compact",
+                                                },
+                                                "text": cache["summary"],
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VBtn",
+                                                "props": {
+                                                    "color": "primary",
+                                                    "variant": "elevated",
+                                                    "prepend-icon": "mdi-lan-connect",
+                                                    "block": True,
+                                                },
+                                                "text": "连接测试",
+                                                "events": {
+                                                    "click": {
+                                                        "api": "plugin/FlowpanEventNotify/test_connection",
+                                                        "method": "post",
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 3},
+                                        "content": [
+                                            {
+                                                "component": "VChip",
+                                                "props": {"color": "primary", "variant": "tonal"},
+                                                "text": f"存储桥：{connection['bridge']}",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 3},
+                                        "content": [
+                                            {
+                                                "component": "VChip",
+                                                "props": {"color": "primary", "variant": "tonal"},
+                                                "text": f"目录缓存：{cache['enabled_text']}",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 3},
+                                        "content": [
+                                            {
+                                                "component": "VChip",
+                                                "props": {"color": "primary", "variant": "tonal"},
+                                                "text": f"TTL：{cache['ttl_seconds']} 秒",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 3},
+                                        "content": [
+                                            {
+                                                "component": "VChip",
+                                                "props": {"color": "primary", "variant": "tonal"},
+                                                "text": f"缓存条数：{cache['entry_count']}",
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-subtitle-2 mt-4 mb-2"},
+                                "text": "缓存目录时间",
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-body-2 text-medium-emphasis mb-3"},
+                                "text": cache["time_summary"],
+                            },
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-body-2"},
+                                                "text": f"最近缓存：{cache['latest_text']}",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-body-2"},
+                                                "text": f"最早缓存：{cache['oldest_text']}",
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            *(
+                                [
+                                    {
+                                        "component": "VDivider",
+                                        "props": {"class": "my-4"},
+                                    },
+                                    {
+                                        "component": "div",
+                                        "props": {"class": "text-subtitle-2 mb-2"},
+                                        "text": "缓存目录明细",
+                                    },
+                                ]
+                                if cache_entries
+                                else []
+                            ),
+                            *[
+                                {
+                                    "component": "VAlert",
+                                    "props": {
+                                        "type": "info",
+                                        "variant": "tonal",
+                                        "density": "compact",
+                                        "class": "mb-2",
+                                    },
+                                    "text": (
+                                        f"{entry['path']} | {entry['item_count']} 项 | "
+                                        f"已缓存 {entry['age_text']} | 剩余 {entry['remaining_text']}"
+                                    ),
+                                }
+                                for entry in cache_entries[:10]
+                            ],
+                        ],
+                    }
+                ],
+            }
+        ]
 
     def get_module(self) -> Dict[str, Any]:
         """
@@ -391,6 +612,29 @@ class FlowpanEventNotify(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "storage_cache_ttl_seconds",
+                                            "label": "目录缓存 TTL（秒）",
+                                            "type": "number",
+                                            "min": 0,
+                                            "max": 86400,
+                                            "hint": "0 表示关闭目录缓存，默认 300 秒",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
@@ -413,7 +657,53 @@ class FlowpanEventNotify(_PluginBase):
             "storage_bridge_enabled": False,
             "storage_name": DEFAULT_STORAGE_NAME,
             "storage_part_size_mb": 10,
+            "storage_cache_ttl_seconds": DEFAULT_STORAGE_CACHE_TTL_SECONDS,
         }
+
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        测试 Flowpan 存储桥连通性。
+        """
+        try:
+            if not self._storage_bridge_enabled:
+                return {
+                    "code": 1,
+                    "msg": "请先启用 Flowpan 115 存储桥",
+                }
+            if not self._storage_api:
+                return {
+                    "code": 1,
+                    "msg": "存储桥未初始化，请检查地址和密钥",
+                }
+            usage = self._storage_api.probe_connection()
+            cache = self._storage_api.list_cache_stats()
+            total = self._format_size_text(usage.get("total"))
+            available = self._format_size_text(usage.get("available"))
+            cache_state = "启用" if cache.get("enabled") else "关闭"
+            cache_count = int(cache.get("entry_count") or 0)
+            cache_ttl = int(cache.get("ttl_seconds") or 0)
+            logger.info(
+                "【Flowpan事件通知】连接测试成功，缓存条数=%d，TTL=%d 秒",
+                cache_count,
+                cache_ttl,
+            )
+            return {
+                "code": 0,
+                "msg": (
+                    f"连接测试成功：容量 {total}，可用 {available}；"
+                    f"目录缓存{cache_state}，TTL {cache_ttl} 秒，当前 {cache_count} 条"
+                ),
+                "data": {
+                    "usage": usage,
+                    "cache": cache,
+                },
+            }
+        except Exception as error:
+            logger.error(f"【Flowpan事件通知】连接测试失败: {error}", exc_info=True)
+            return {
+                "code": 1,
+                "msg": f"连接测试失败: {error}",
+            }
 
     @eventmanager.register(ChainEventType.StorageOperSelection)
     def storage_oper_selection(self, event: Event) -> None:
@@ -518,6 +808,124 @@ class FlowpanEventNotify(_PluginBase):
         if not self._storage_api:
             return None
         return self._storage_api.support_transtype()
+
+    def _build_connection_summary(self) -> Dict[str, str]:
+        if not self._storage_bridge_enabled:
+            return {
+                "tone": "warning",
+                "text": "存储桥未启用，无法进行连接测试。",
+                "bridge": "关闭",
+            }
+        if not self._storage_api:
+            return {
+                "tone": "warning",
+                "text": "存储桥已启用，但尚未完成初始化，请检查地址、密钥和存储名称。",
+                "bridge": "未初始化",
+            }
+        if not self._flowpan_url or not self._token:
+            return {
+                "tone": "warning",
+                "text": "Flowpan 地址或事件密钥未配置完整。",
+                "bridge": "配置不完整",
+            }
+        return {
+            "tone": "info",
+            "text": "Flowpan 存储桥已配置，点击连接测试验证连通性。",
+            "bridge": "待测试",
+        }
+
+    def _build_cache_summary(self) -> Dict[str, Any]:
+        if not self._storage_api:
+            return {
+                "tone": "warning",
+                "summary": "目录缓存不可用：存储桥未初始化",
+                "enabled_text": "关闭",
+                "ttl_seconds": self._storage_cache_ttl_seconds,
+                "entry_count": 0,
+                "latest_text": "无",
+                "oldest_text": "无",
+                "time_summary": f"设置 TTL：{self._storage_cache_ttl_seconds} 秒",
+                "entries": [],
+            }
+        stats = self._storage_api.list_cache_stats()
+        ttl_seconds = int(stats.get("ttl_seconds") or self._storage_cache_ttl_seconds)
+        entry_count = int(stats.get("entry_count") or 0)
+        latest_cached_at = int(stats.get("latest_cached_at") or 0)
+        oldest_cached_at = int(stats.get("oldest_cached_at") or 0)
+        enabled = bool(stats.get("enabled"))
+        entries: List[Dict[str, Any]] = []
+        for item in stats.get("entries") or []:
+            cached_at = int(item.get("cached_at") or 0)
+            age_seconds = int(item.get("age_seconds") or 0)
+            remaining_seconds = int(item.get("remaining_seconds") or 0)
+            entries.append(
+                {
+                    "path": self._cache_entry_path(item.get("key") or ""),
+                    "item_count": int(item.get("item_count") or 0),
+                    "age_text": self._seconds_text(age_seconds),
+                    "remaining_text": self._seconds_text(remaining_seconds),
+                    "cached_at": cached_at,
+                }
+            )
+        return {
+            "tone": "success" if enabled else "warning",
+            "summary": (
+                f"目录缓存{'已启用' if enabled else '已关闭'}，"
+                f"TTL {ttl_seconds} 秒，当前 {entry_count} 条"
+            ),
+            "enabled_text": "启用" if enabled else "关闭",
+            "ttl_seconds": ttl_seconds,
+            "entry_count": entry_count,
+            "latest_text": self._format_ts(latest_cached_at),
+            "oldest_text": self._format_ts(oldest_cached_at),
+            "time_summary": f"设置 TTL：{ttl_seconds} 秒",
+            "entries": entries,
+        }
+
+    @staticmethod
+    def _format_ts(timestamp: int) -> str:
+        if not timestamp:
+            return "无"
+        try:
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+        except Exception:
+            return str(timestamp)
+
+    @staticmethod
+    def _seconds_text(value: int) -> str:
+        seconds = max(0, int(value or 0))
+        if seconds < 60:
+            return f"{seconds} 秒"
+        minutes, sec = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes} 分 {sec} 秒"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours} 小时 {minutes} 分"
+
+    @staticmethod
+    def _cache_entry_path(cache_key: str) -> str:
+        if not cache_key:
+            return "/"
+        if ":cid:" in cache_key:
+            return f"[CID] {cache_key.rsplit(':cid:', 1)[-1]}"
+        if ":" in cache_key:
+            return cache_key.split(":", 1)[-1]
+        return cache_key
+
+    @staticmethod
+    def _format_size_text(raw: Any) -> str:
+        try:
+            size = float(raw or 0)
+        except (TypeError, ValueError):
+            return "0 B"
+        units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        index = 0
+        while size >= 1024 and index < len(units) - 1:
+            size /= 1024.0
+            index += 1
+        if index == 0:
+            return f"{int(size)} {units[index]}"
+        return f"{size:.2f} {units[index]}"
 
     def _storage_item(self, fileitem: FileItem) -> bool:
         return bool(
