@@ -192,10 +192,18 @@ class FlowpanStorageAPI:
                     uploaded += chunk_size
                     progress_callback(self._upload_progress(uploaded, file_size))
 
-            session = self._api(
-                "/api/mp/storage/115/upload/complete",
-                {"session": session, "parts": sorted(parts, key=lambda p: p["part_number"])},
-            )
+            try:
+                session = self._api(
+                    "/api/mp/storage/115/upload/complete",
+                    {"session": session, "parts": sorted(parts, key=lambda p: p["part_number"])},
+                )
+            except Exception as error:
+                if "restart_required" in str(error).lower():
+                    self._drop_state(state_key)
+                    logger.warning(
+                        f"【Flowpan存储】断点会话已失效，已清理状态等待重新初始化: {target_name}"
+                    )
+                raise
             progress_callback(100)
             self._drop_state(state_key)
             self._clear_list_cache()
