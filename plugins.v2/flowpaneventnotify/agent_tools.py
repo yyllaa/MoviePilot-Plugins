@@ -17,6 +17,20 @@ from app.schemas import FileItem, StorageUsage
 PLUGIN_ID = "FlowpanEventNotify"
 
 
+def _tool_tags(*names: str) -> list[str]:
+    """兼容不同 MoviePilot 版本的 ToolTag。
+
+    MP 的 ToolTag 枚举在不同版本里并不完全一致，插件不能在 import 阶段
+    直接引用可能不存在的 tag，否则会导致插件整体加载失败。
+    """
+    tags: list[str] = []
+    for name in names:
+        value = getattr(ToolTag, name, None)
+        if value is not None:
+            tags.append(value)
+    return tags
+
+
 def _to_plain(value: Any) -> Any:
     """递归转换为可序列化的基础类型。"""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -88,7 +102,7 @@ class FlowpanStorageUsageInput(BaseModel):
 
 class FlowpanStorageUsageTool(MoviePilotTool):
     name: str = "flowpan_storage_usage"
-    tags: list[str] = [ToolTag.Read, ToolTag.Storage, ToolTag.Admin]
+    tags: list[str] = _tool_tags("Read", "Admin")
     description: str = "查询 Flowpan 115 存储桥的容量、可用空间和支持的传输类型。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageUsageInput
@@ -139,7 +153,7 @@ class FlowpanStorageListInput(BaseModel):
 
 class FlowpanStorageListTool(MoviePilotTool):
     name: str = "flowpan_storage_list"
-    tags: list[str] = [ToolTag.Read, ToolTag.Directory, ToolTag.Storage, ToolTag.Admin]
+    tags: list[str] = _tool_tags("Read", "Directory", "Admin")
     description: str = "浏览 Flowpan 115 存储目录，支持递归列出和后缀过滤。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageListInput
@@ -200,7 +214,7 @@ class FlowpanStorageItemInput(BaseModel):
 
 class FlowpanStorageItemTool(MoviePilotTool):
     name: str = "flowpan_storage_item"
-    tags: list[str] = [ToolTag.Read, ToolTag.File, ToolTag.Directory, ToolTag.Storage, ToolTag.Admin]
+    tags: list[str] = _tool_tags("Read", "File", "Directory", "Admin")
     description: str = "查询 Flowpan 115 存储中的单个文件/目录，或返回其父目录。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageItemInput
@@ -253,7 +267,7 @@ class FlowpanStorageCheckInput(BaseModel):
 
 class FlowpanStorageCheckTool(MoviePilotTool):
     name: str = "flowpan_storage_check"
-    tags: list[str] = [ToolTag.Read, ToolTag.File, ToolTag.Directory, ToolTag.Storage, ToolTag.Admin]
+    tags: list[str] = _tool_tags("Read", "File", "Directory", "Admin")
     description: str = "检查 Flowpan 115 存储中的路径是否存在，以及目录中是否有匹配后缀的文件。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageCheckInput
@@ -309,7 +323,7 @@ class FlowpanStorageFolderInput(BaseModel):
 
 class FlowpanStorageFolderTool(MoviePilotTool):
     name: str = "flowpan_storage_folder"
-    tags: list[str] = [ToolTag.Write, ToolTag.Directory, ToolTag.Storage, ToolTag.Admin]
+    tags: list[str] = _tool_tags("Write", "Directory", "Admin")
     description: str = "按绝对路径确保 Flowpan 115 存储目录存在并返回目录信息。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageFolderInput
@@ -357,7 +371,7 @@ class FlowpanStorageManageInput(BaseModel):
 
 class FlowpanStorageManageTool(MoviePilotTool):
     name: str = "flowpan_storage_manage"
-    tags: list[str] = [ToolTag.Write, ToolTag.File, ToolTag.Directory, ToolTag.Storage, ToolTag.Admin]
+    tags: list[str] = _tool_tags("Write", "File", "Directory", "Admin")
     description: str = "对 Flowpan 115 存储中的文件执行重命名、删除或上传。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageManageInput
