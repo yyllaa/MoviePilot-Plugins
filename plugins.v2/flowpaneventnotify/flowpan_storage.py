@@ -483,11 +483,12 @@ class FlowpanStorageAPI:
             return False
 
     def _list_cache_key(self, fileitem: FileItem) -> str:
+        prefix = f"{self._storage_backend}:{self._disk_name}"
         file_id = self._file_id(fileitem)
         if file_id is not None:
-            return f"{self._disk_name}:cid:{file_id}"
+            return f"{prefix}:cid:{file_id}"
         path = self._normalize_dir_path(getattr(fileitem, "path", "/") or "/")
-        return f"{self._disk_name}:{path}"
+        return f"{prefix}:path:{path}"
 
     def _get_list_cache(self, key: str) -> Optional[List[FileItem]]:
         if self._list_cache_ttl <= 0:

@@ -45,7 +45,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.19"
+    plugin_version = "1.1.20"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -218,7 +218,7 @@ class FlowpanEventNotify(_PluginBase):
         metric_chips = [
             ("mdi-lan-connect", "存储桥", connection["bridge"], connection["tone"]),
             ("mdi-source-branch", "链路", backend_text, "primary"),
-            ("mdi-folder-clock-outline", "目录缓存", cache["enabled_text"], cache_color),
+            ("mdi-folder-clock-outline", "当前链路缓存", cache["enabled_text"], cache_color),
             ("mdi-timer-outline", "TTL", f"{cache['ttl_seconds']} 秒", "secondary"),
             ("mdi-format-list-numbered", "缓存条数", str(cache["entry_count"]), "secondary"),
         ]
@@ -928,7 +928,7 @@ class FlowpanEventNotify(_PluginBase):
         return {
             "tone": "success" if enabled else "warning",
             "summary": (
-                f"目录缓存{'已启用' if enabled else '已关闭'}，"
+                f"当前链路目录缓存{'已启用' if enabled else '已关闭'}，"
                 f"TTL {ttl_seconds} 秒，当前 {entry_count} 条"
             ),
             "enabled_text": "启用" if enabled else "关闭",
@@ -966,6 +966,8 @@ class FlowpanEventNotify(_PluginBase):
             return "/"
         if ":cid:" in cache_key:
             return f"[CID] {cache_key.rsplit(':cid:', 1)[-1]}"
+        if ":path:" in cache_key:
+            return cache_key.split(":path:", 1)[-1]
         if ":" in cache_key:
             return cache_key.split(":", 1)[-1]
         return cache_key
