@@ -45,7 +45,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.18"
+    plugin_version = "1.1.19"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -213,6 +213,20 @@ class FlowpanEventNotify(_PluginBase):
         connection = self._build_connection_summary()
         cache = self._build_cache_summary()
         cache_entries = cache.get("entries") or []
+        backend_text = "OpenAPI" if self._storage_backend == "open" else "Cookie"
+        cache_color = "success" if cache.get("enabled_text") == "启用" else "warning"
+        metric_chips = [
+            ("mdi-lan-connect", "存储桥", connection["bridge"], connection["tone"]),
+            ("mdi-source-branch", "链路", backend_text, "primary"),
+            ("mdi-folder-clock-outline", "目录缓存", cache["enabled_text"], cache_color),
+            ("mdi-timer-outline", "TTL", f"{cache['ttl_seconds']} 秒", "secondary"),
+            ("mdi-format-list-numbered", "缓存条数", str(cache["entry_count"]), "secondary"),
+        ]
+        cache_time_items = [
+            ("最近缓存", cache["latest_text"]),
+            ("最早缓存", cache["oldest_text"]),
+            ("缓存策略", cache["time_summary"]),
+        ]
         return [
             {
                 "component": "VCard",
@@ -220,54 +234,31 @@ class FlowpanEventNotify(_PluginBase):
                 "content": [
                     {
                         "component": "VCardText",
-                        "props": {"class": "pa-6"},
+                        "props": {"class": "pa-4 pa-sm-5"},
                         "content": [
                             {
-                                "component": "div",
-                                "props": {"class": "text-h6 mb-2"},
-                                "text": "连接测试",
-                            },
-                            {
-                                "component": "div",
-                                "props": {"class": "text-body-2 text-medium-emphasis mb-4"},
-                                "text": "测试 Flowpan 地址、事件密钥和 115 存储桥是否可用。",
-                            },
-                            {
                                 "component": "VRow",
+                                "props": {"align": "center", "class": "mb-2"},
                                 "content": [
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 4},
+                                        "props": {"cols": 12, "sm": 7},
                                         "content": [
                                             {
-                                                "component": "VAlert",
-                                                "props": {
-                                                    "type": connection["tone"],
-                                                    "variant": "tonal",
-                                                    "density": "compact",
-                                                },
-                                                "text": connection["text"],
-                                            }
+                                                "component": "div",
+                                                "props": {"class": "text-subtitle-1 font-weight-bold"},
+                                                "text": "连接测试",
+                                            },
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-body-2 text-medium-emphasis mt-1"},
+                                                "text": "验证 Flowpan 存储桥、鉴权和目录缓存状态。",
+                                            },
                                         ],
                                     },
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 4},
-                                        "content": [
-                                            {
-                                                "component": "VAlert",
-                                                "props": {
-                                                    "type": cache["tone"],
-                                                    "variant": "tonal",
-                                                    "density": "compact",
-                                                },
-                                                "text": cache["summary"],
-                                            }
-                                        ],
-                                    },
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 4},
+                                        "props": {"cols": 12, "sm": 5},
                                         "content": [
                                             {
                                                 "component": "VBtn",
@@ -276,6 +267,7 @@ class FlowpanEventNotify(_PluginBase):
                                                     "variant": "elevated",
                                                     "prepend-icon": "mdi-lan-connect",
                                                     "block": True,
+                                                    "size": "large",
                                                 },
                                                 "text": "连接测试",
                                                 "events": {
@@ -291,48 +283,37 @@ class FlowpanEventNotify(_PluginBase):
                             },
                             {
                                 "component": "VRow",
+                                "props": {"dense": True, "class": "mb-3"},
                                 "content": [
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 3},
+                                        "props": {"cols": 12, "md": 6},
                                         "content": [
                                             {
-                                                "component": "VChip",
-                                                "props": {"color": "primary", "variant": "tonal"},
-                                                "text": f"存储桥：{connection['bridge']}",
+                                                "component": "VAlert",
+                                                "props": {
+                                                    "type": connection["tone"],
+                                                    "variant": "tonal",
+                                                    "density": "compact",
+                                                    "class": "h-100",
+                                                },
+                                                "text": connection["text"],
                                             }
                                         ],
                                     },
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 3},
+                                        "props": {"cols": 12, "md": 6},
                                         "content": [
                                             {
-                                                "component": "VChip",
-                                                "props": {"color": "primary", "variant": "tonal"},
-                                                "text": f"目录缓存：{cache['enabled_text']}",
-                                            }
-                                        ],
-                                    },
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 3},
-                                        "content": [
-                                            {
-                                                "component": "VChip",
-                                                "props": {"color": "primary", "variant": "tonal"},
-                                                "text": f"TTL：{cache['ttl_seconds']} 秒",
-                                            }
-                                        ],
-                                    },
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 3},
-                                        "content": [
-                                            {
-                                                "component": "VChip",
-                                                "props": {"color": "primary", "variant": "tonal"},
-                                                "text": f"缓存条数：{cache['entry_count']}",
+                                                "component": "VAlert",
+                                                "props": {
+                                                    "type": cache["tone"],
+                                                    "variant": "tonal",
+                                                    "density": "compact",
+                                                    "class": "h-100",
+                                                },
+                                                "text": cache["summary"],
                                             }
                                         ],
                                     },
@@ -340,37 +321,51 @@ class FlowpanEventNotify(_PluginBase):
                             },
                             {
                                 "component": "div",
-                                "props": {"class": "text-subtitle-2 mt-4 mb-2"},
-                                "text": "缓存目录时间",
+                                "props": {"class": "d-flex flex-wrap ga-2 mb-4"},
+                                "content": [
+                                    {
+                                        "component": "VChip",
+                                        "props": {
+                                            "color": color,
+                                            "variant": "tonal",
+                                            "size": "small",
+                                            "prepend-icon": icon,
+                                        },
+                                        "text": f"{label}: {value}",
+                                    }
+                                    for icon, label, value, color in metric_chips
+                                ],
                             },
                             {
                                 "component": "div",
-                                "props": {"class": "text-body-2 text-medium-emphasis mb-3"},
-                                "text": cache["time_summary"],
-                            },
-                            {
-                                "component": "VRow",
+                                "props": {"class": "rounded border pa-3"},
                                 "content": [
                                     {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 6},
-                                        "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"class": "text-body-2"},
-                                                "text": f"最近缓存：{cache['latest_text']}",
-                                            }
-                                        ],
+                                        "component": "div",
+                                        "props": {"class": "text-subtitle-2 mb-2"},
+                                        "text": "缓存目录时间",
                                     },
                                     {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 6},
+                                        "component": "VRow",
+                                        "props": {"dense": True},
                                         "content": [
                                             {
-                                                "component": "div",
-                                                "props": {"class": "text-body-2"},
-                                                "text": f"最早缓存：{cache['oldest_text']}",
+                                                "component": "VCol",
+                                                "props": {"cols": 12, "sm": 4},
+                                                "content": [
+                                                    {
+                                                        "component": "div",
+                                                        "props": {"class": "text-caption text-medium-emphasis"},
+                                                        "text": label,
+                                                    },
+                                                    {
+                                                        "component": "div",
+                                                        "props": {"class": "text-body-2 font-weight-medium"},
+                                                        "text": value,
+                                                    },
+                                                ],
                                             }
+                                            for label, value in cache_time_items
                                         ],
                                     },
                                 ],
@@ -379,12 +374,27 @@ class FlowpanEventNotify(_PluginBase):
                                 [
                                     {
                                         "component": "VDivider",
-                                        "props": {"class": "my-4"},
+                                        "props": {"class": "my-3"},
                                     },
                                     {
                                         "component": "div",
-                                        "props": {"class": "text-subtitle-2 mb-2"},
-                                        "text": "缓存目录明细",
+                                        "props": {"class": "d-flex align-center justify-space-between mb-2"},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-subtitle-2"},
+                                                "text": "缓存目录明细",
+                                            },
+                                            {
+                                                "component": "VChip",
+                                                "props": {
+                                                    "size": "x-small",
+                                                    "variant": "tonal",
+                                                    "color": "secondary",
+                                                },
+                                                "text": "最多 10 条",
+                                            },
+                                        ],
                                     },
                                 ]
                                 if cache_entries
@@ -392,17 +402,36 @@ class FlowpanEventNotify(_PluginBase):
                             ),
                             *[
                                 {
-                                    "component": "VAlert",
-                                    "props": {
-                                        "type": "info",
-                                        "variant": "tonal",
-                                        "density": "compact",
-                                        "class": "mb-2",
-                                    },
-                                    "text": (
-                                        f"{entry['path']} | {entry['item_count']} 项 | "
-                                        f"已缓存 {entry['age_text']} | 剩余 {entry['remaining_text']}"
-                                    ),
+                                    "component": "div",
+                                    "props": {"class": "rounded border pa-3 mb-2"},
+                                    "content": [
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "text-body-2 font-weight-medium text-truncate mb-2"},
+                                            "text": entry["path"],
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "d-flex flex-wrap ga-2"},
+                                            "content": [
+                                                {
+                                                    "component": "VChip",
+                                                    "props": {"size": "x-small", "variant": "tonal"},
+                                                    "text": f"{entry['item_count']} 项",
+                                                },
+                                                {
+                                                    "component": "VChip",
+                                                    "props": {"size": "x-small", "variant": "tonal"},
+                                                    "text": f"已缓存 {entry['age_text']}",
+                                                },
+                                                {
+                                                    "component": "VChip",
+                                                    "props": {"size": "x-small", "variant": "tonal"},
+                                                    "text": f"剩余 {entry['remaining_text']}",
+                                                },
+                                            ],
+                                        },
+                                    ],
                                 }
                                 for entry in cache_entries[:10]
                             ],
