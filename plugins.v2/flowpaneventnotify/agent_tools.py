@@ -150,6 +150,7 @@ class FlowpanStorageUsageTool(MoviePilotTool):
                 "success": True,
                 "plugin_id": PLUGIN_ID,
                 "storage_name": _storage_name(plugin),
+                "storage_backend": str(getattr(plugin, "_storage_backend", "") or "cookie"),
                 "bridge_enabled": bool(getattr(plugin, "_storage_bridge_enabled", False)),
                 "storage_ready": bool(getattr(plugin, "_storage_api", None)),
                 "usage": usage,

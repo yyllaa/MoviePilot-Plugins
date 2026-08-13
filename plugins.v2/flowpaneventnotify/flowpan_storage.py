@@ -17,9 +17,9 @@ from app.schemas import FileItem, StorageUsage
 
 class FlowpanStorageAPI:
     """
-    MoviePilot storage adapter backed by Flowpan's native 115 Cookie upload
-    bridge. MoviePilot reads the local file and PUTs parts directly to 115 OSS;
-    Flowpan only provides 115 upload init/sign/complete APIs.
+    MoviePilot storage adapter backed by Flowpan's native 115 upload bridge.
+    MoviePilot reads the local file and PUTs parts directly to 115 OSS; Flowpan
+    provides Cookie or OpenAPI upload init/sign/complete APIs.
     """
 
     def __init__(
@@ -27,12 +27,19 @@ class FlowpanStorageAPI:
         flowpan_url: str,
         token: str,
         disk_name: str = "Flowpan-115",
+        storage_backend: str = "cookie",
         part_size_mb: int = 10,
         list_cache_ttl: int = 300,
     ) -> None:
         self._flowpan_url = (flowpan_url or "").strip().rstrip("/")
         self._token = (token or "").strip()
         self._disk_name = (disk_name or "Flowpan-115").strip()
+        self._storage_backend = self._normalize_storage_backend(storage_backend)
+        self._api_prefix = (
+            "/api/mp/storage/115/open"
+            if self._storage_backend == "open"
+            else "/api/mp/storage/115"
+        )
         self._part_size = max(5, min(128, int(part_size_mb or 10))) * 1024 * 1024
         self._state_dir = (
             Path(os.environ.get("CONFIG_DIR") or "/config")
@@ -82,7 +89,7 @@ class FlowpanStorageAPI:
             session = self._load_state(state_key) or {}
             if session:
                 try:
-                    session = self._api("/api/mp/storage/115/upload/resume", session)
+                    session = self._api_endpoint("upload/resume", session)
                     logger.info(f"【Flowpan存储】恢复断点上传: {target_name}")
                 except Exception as error:
                     logger.warning(f"【Flowpan存储】断点恢复失败，重新初始化: {error}")
@@ -121,9 +128,9 @@ class FlowpanStorageAPI:
 
             session["part_size"] = self._part_size
             if not session.get("upload_id"):
-                session = self._api("/api/mp/storage/115/upload/start", session)
+                session = self._api_endpoint("upload/start", session)
             else:
-                session = self._api("/api/mp/storage/115/upload/list-parts", session)
+                session = self._api_endpoint("upload/list-parts", session)
             progress_callback(10)
             self._save_state(state_key, session)
             upload_id = session.get("upload_id")
@@ -163,7 +170,7 @@ class FlowpanStorageAPI:
                             f"【Flowpan存储】上传分片 {part_number}/{total_parts}: {target_name}"
                         )
                     signed = self._api(
-                        "/api/mp/storage/115/upload/part-url",
+                        self._endpoint("upload/part-url"),
                         {"session": session, "part_number": part_number},
                     )
                     response = requests.put(
@@ -194,7 +201,7 @@ class FlowpanStorageAPI:
 
             try:
                 session = self._api(
-                    "/api/mp/storage/115/upload/complete",
+                    self._endpoint("upload/complete"),
                     {"session": session, "parts": sorted(parts, key=lambda p: p["part_number"])},
                 )
             except Exception as error:
@@ -224,7 +231,7 @@ class FlowpanStorageAPI:
     def get_folder(self, path: Path) -> Optional[FileItem]:
         folder_path = self._normalize_dir_path(Path(path).as_posix())
         try:
-            data = self._api("/api/mp/storage/115/dir/ensure", {"path": folder_path})
+            data = self._api_endpoint("dir/ensure", {"path": folder_path})
             return FileItem(
                 storage=self._disk_name,
                 fileid=str(data.get("cid") or 0),
@@ -240,7 +247,7 @@ class FlowpanStorageAPI:
     def get_item(self, path: Path) -> Optional[FileItem]:
         try:
             data = self._api(
-                "/api/mp/storage/115/item",
+                self._endpoint("item"),
                 {"path": Path(path).as_posix(), "storage": self._disk_name},
             )
             return self._file_item_from_data(data)
@@ -270,7 +277,7 @@ class FlowpanStorageAPI:
             if file_id is not None:
                 payload["cid"] = file_id
             data = self._api(
-                "/api/mp/storage/115/dir/list",
+                self._endpoint("dir/list"),
                 payload,
             )
             items = [
@@ -299,7 +306,7 @@ class FlowpanStorageAPI:
             "limit": max(1, min(int(limit or 100), 200)),
             "storage": self._disk_name,
         }
-        data = self._api("/api/mp/storage/115/search", payload)
+        data = self._api_endpoint("search", payload)
         items = [
             item
             for item in (self._file_item_from_data(raw) for raw in data.get("items") or [])
@@ -340,7 +347,7 @@ class FlowpanStorageAPI:
         if not file_id:
             return False
         try:
-            self._api("/api/mp/storage/115/delete", {"ids": [file_id]})
+            self._api_endpoint("delete", {"ids": [file_id]})
             self._clear_list_cache()
             return True
         except Exception as error:
@@ -353,7 +360,7 @@ class FlowpanStorageAPI:
         if not file_id or not name:
             return False
         try:
-            self._api("/api/mp/storage/115/rename", {"id": file_id, "name": name})
+            self._api_endpoint("rename", {"id": file_id, "name": name})
             self._clear_list_cache()
             return True
         except Exception as error:
@@ -384,7 +391,9 @@ class FlowpanStorageAPI:
         """
         探测 Flowpan / 115 存储桥连通性与鉴权状态。
         """
-        return self._api("/api/mp/storage/115/usage", {})
+        data = self._api_endpoint("usage", {})
+        data["backend"] = self._storage_backend
+        return data
 
     def list_cache_stats(self) -> Dict[str, Any]:
         """
@@ -453,15 +462,15 @@ class FlowpanStorageAPI:
         if not target_name:
             return False
         try:
-            folder = self._api("/api/mp/storage/115/dir/ensure", {"path": target_dir_path})
+            folder = self._api_endpoint("dir/ensure", {"path": target_dir_path})
             target_cid = int(folder.get("cid") or 0)
-            endpoint = "/api/mp/storage/115/copy" if action == "copy" else "/api/mp/storage/115/move"
-            if action == "move":
+            endpoint = "copy" if action == "copy" else "move"
+            if action == "move" and self._storage_backend != "open":
                 self._api(
-                    "/api/mp/storage/115/move/check-conflict",
+                    self._endpoint("move/check-conflict"),
                     {"ids": [file_id], "parent_id": target_cid},
                 )
-            self._api(endpoint, {"ids": [file_id], "parent_id": target_cid})
+            self._api_endpoint(endpoint, {"ids": [file_id], "parent_id": target_cid})
             self._clear_list_cache()
             current_name = (getattr(fileitem, "name", "") or Path(getattr(fileitem, "path", "")).name).strip()
             if target_name and target_name != current_name:
@@ -525,7 +534,7 @@ class FlowpanStorageAPI:
             payload["sign_key"] = sign_key
         if sign_val:
             payload["sign_val"] = sign_val
-        return self._api("/api/mp/storage/115/upload/init", payload)
+        return self._api_endpoint("upload/init", payload)
 
     def _api(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = self._flowpan_url + path
@@ -542,6 +551,12 @@ class FlowpanStorageAPI:
             raise RuntimeError(data.get("msg") or f"Flowpan HTTP {response.status_code}")
         return data.get("data") or {}
 
+    def _api_endpoint(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._api(self._endpoint(endpoint), payload)
+
+    def _endpoint(self, endpoint: str) -> str:
+        return self._api_prefix + "/" + str(endpoint or "").lstrip("/")
+
     def _target_cid(self, target_dir: FileItem, target_dir_path: str) -> Optional[int]:
         try:
             if getattr(target_dir, "fileid", None) not in (None, ""):
@@ -549,7 +564,7 @@ class FlowpanStorageAPI:
         except Exception:
             pass
         try:
-            data = self._api("/api/mp/storage/115/dir/ensure", {"path": target_dir_path})
+            data = self._api_endpoint("dir/ensure", {"path": target_dir_path})
             return int(data.get("cid") or 0)
         except Exception as error:
             logger.error(f"【Flowpan存储】解析目标目录失败 {target_dir_path}: {error}")
@@ -586,6 +601,11 @@ class FlowpanStorageAPI:
     @staticmethod
     def _ensure_trailing_slash(value: str) -> str:
         return value if value.endswith("/") else value + "/"
+
+    @staticmethod
+    def _normalize_storage_backend(value: str) -> str:
+        value = str(value or "cookie").strip().lower()
+        return "open" if value == "open" else "cookie"
 
     @staticmethod
     def _sha1_file_pair(
@@ -686,7 +706,7 @@ class FlowpanStorageAPI:
         )
 
     def _state_key(self, local_path: Path, target_path: str, size: int, sha1: str) -> str:
-        raw = f"{local_path.as_posix()}|{target_path}|{size}|{sha1}"
+        raw = f"{self._storage_backend}|{local_path.as_posix()}|{target_path}|{size}|{sha1}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def _state_file(self, key: str) -> Path:

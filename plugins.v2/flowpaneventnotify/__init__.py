@@ -28,6 +28,7 @@ DEFAULT_TARGET_STORAGES = "u115,115网盘Plus"
 DEFAULT_QUIET_SECONDS = 180
 DEFAULT_MAX_WAIT_SECONDS = 1800
 DEFAULT_STORAGE_NAME = "Flowpan-115"
+DEFAULT_STORAGE_BACKEND = "cookie"
 DEFAULT_STORAGE_CACHE_TTL_SECONDS = 300
 UPLOAD_NOTIFY_DEDUPE_SECONDS = 300
 
@@ -64,6 +65,7 @@ class FlowpanEventNotify(_PluginBase):
         self._target_storages: Set[str] = set()
         self._storage_bridge_enabled = False
         self._storage_name = DEFAULT_STORAGE_NAME
+        self._storage_backend = DEFAULT_STORAGE_BACKEND
         self._storage_part_size_mb = 10
         self._storage_cache_ttl_seconds = DEFAULT_STORAGE_CACHE_TTL_SECONDS
         self._storage_api: Optional[FlowpanStorageAPI] = None
@@ -94,6 +96,9 @@ class FlowpanEventNotify(_PluginBase):
             merged.get("target_storages", DEFAULT_TARGET_STORAGES)
         )
         storage_name = str(merged.get("storage_name") or DEFAULT_STORAGE_NAME).strip()
+        storage_backend = self._normalize_storage_backend(
+            merged.get("storage_backend", DEFAULT_STORAGE_BACKEND)
+        )
         storage_part_size_mb = self._bounded_int(
             merged.get("storage_part_size_mb"), 10, 5, 128
         )
@@ -111,6 +116,7 @@ class FlowpanEventNotify(_PluginBase):
         self._target_storages = target_storages
         self._storage_bridge_enabled = bool(merged.get("storage_bridge_enabled"))
         self._storage_name = storage_name or DEFAULT_STORAGE_NAME
+        self._storage_backend = storage_backend
         self._storage_part_size_mb = storage_part_size_mb
         self._storage_cache_ttl_seconds = storage_cache_ttl_seconds
         self._storage_api = None
@@ -133,6 +139,7 @@ class FlowpanEventNotify(_PluginBase):
                     flowpan_url=self._flowpan_url,
                     token=self._token,
                     disk_name=self._storage_name,
+                    storage_backend=self._storage_backend,
                     part_size_mb=self._storage_part_size_mb,
                     list_cache_ttl=self._storage_cache_ttl_seconds,
                 )
@@ -146,6 +153,7 @@ class FlowpanEventNotify(_PluginBase):
             "max_wait_seconds": max_wait_seconds,
             "target_storages": ",".join(sorted(target_storages)),
             "storage_name": self._storage_name,
+            "storage_backend": self._storage_backend,
             "storage_part_size_mb": storage_part_size_mb,
             "storage_cache_ttl_seconds": storage_cache_ttl_seconds,
         }
@@ -460,7 +468,7 @@ class FlowpanEventNotify(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -528,7 +536,7 @@ class FlowpanEventNotify(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -545,7 +553,26 @@ class FlowpanEventNotify(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "storage_backend",
+                                            "label": "Flowpan 链路",
+                                            "items": [
+                                                {"title": "Cookie", "value": "cookie"},
+                                                {"title": "OpenAPI", "value": "open"},
+                                            ],
+                                            "hint": "OpenAPI 需要 Flowpan 已登录并启用 Open",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -656,6 +683,7 @@ class FlowpanEventNotify(_PluginBase):
             "target_storages": DEFAULT_TARGET_STORAGES,
             "storage_bridge_enabled": False,
             "storage_name": DEFAULT_STORAGE_NAME,
+            "storage_backend": DEFAULT_STORAGE_BACKEND,
             "storage_part_size_mb": 10,
             "storage_cache_ttl_seconds": DEFAULT_STORAGE_CACHE_TTL_SECONDS,
         }
@@ -690,10 +718,11 @@ class FlowpanEventNotify(_PluginBase):
             return {
                 "code": 0,
                 "msg": (
-                    f"连接测试成功：容量 {total}，可用 {available}；"
+                    f"连接测试成功：链路 {self._storage_backend}，容量 {total}，可用 {available}；"
                     f"目录缓存{cache_state}，TTL {cache_ttl} 秒，当前 {cache_count} 条"
                 ),
                 "data": {
+                    "backend": self._storage_backend,
                     "usage": usage,
                     "cache": cache,
                 },
@@ -1153,12 +1182,18 @@ class FlowpanEventNotify(_PluginBase):
         """
         return {
             "enabled": True,
-            "driver": "flowpan_115_cookie_bridge",
+            "driver": "flowpan_115_bridge",
             "display_name": self._storage_name,
             "flowpan_url": self._flowpan_url,
+            "storage_backend": self._storage_backend,
             "part_size_mb": self._storage_part_size_mb,
             "plugin_version": self.plugin_version,
         }
+
+    @staticmethod
+    def _normalize_storage_backend(value: Any) -> str:
+        value = str(value or DEFAULT_STORAGE_BACKEND).strip().lower()
+        return "open" if value == "open" else "cookie"
 
     @staticmethod
     def _bounded_int(raw: Any, default: int, minimum: int, maximum: int) -> int:
