@@ -608,7 +608,12 @@ class FlowpanEventNotify(_PluginBase):
             "download_file": self.download_file,
             "upload_file": self.upload_file,
             "delete_file": self.delete_file,
+            "delete_files": self.delete_files,
             "rename_file": self.rename_file,
+            "copy_file": self.copy_file,
+            "move_file": self.move_file,
+            "copy_files": self.copy_files,
+            "move_files": self.move_files,
             "get_file_item": self.get_file_item,
             "get_parent_item": self.get_parent_item,
             "get_item_strict": self.get_item_strict,
@@ -1001,10 +1006,44 @@ class FlowpanEventNotify(_PluginBase):
             return None
         return self._storage_api.delete(fileitem)
 
+    def delete_files(self, fileitems: List[FileItem]):
+        if not fileitems:
+            return None
+        valid_items = [item for item in fileitems if self._storage_item(item)]
+        if not valid_items:
+            return None
+        return self._storage_api.delete_many(valid_items)
+
     def rename_file(self, fileitem: FileItem, name: str):
         if not self._storage_item(fileitem):
             return None
         return self._storage_api.rename(fileitem, name)
+
+    def copy_file(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.copy(fileitem, path, new_name)
+
+    def move_file(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None):
+        if not self._storage_item(fileitem):
+            return None
+        return self._storage_api.move(fileitem, path, new_name)
+
+    def copy_files(self, fileitems: List[FileItem], path: Path):
+        if not fileitems:
+            return None
+        valid_items = [item for item in fileitems if self._storage_item(item)]
+        if not valid_items:
+            return None
+        return self._storage_api.copy_many(valid_items, path)
+
+    def move_files(self, fileitems: List[FileItem], path: Path):
+        if not fileitems:
+            return None
+        valid_items = [item for item in fileitems if self._storage_item(item)]
+        if not valid_items:
+            return None
+        return self._storage_api.move_many(valid_items, path)
 
     def get_file_item(self, storage: str, path: Path):
         if storage != self._storage_name or not self._storage_api:

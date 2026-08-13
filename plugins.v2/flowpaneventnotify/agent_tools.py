@@ -447,18 +447,25 @@ class FlowpanStorageFolderTool(MoviePilotTool):
 class FlowpanStorageManageInput(BaseModel):
     """文件管理操作的输入参数。"""
 
-    action: Literal["rename", "delete", "upload"] = Field(
+    action: Literal["rename", "delete", "move", "copy", "upload"] = Field(
         ...,
-        description="rename: 重命名；delete: 删除；upload: 上传本地文件到指定目录",
+        description="rename: 重命名；delete: 删除；move/copy: 移动或复制文件到指定目录；upload: 上传本地文件到指定目录",
     )
-    path: str = Field(default="", description="目标文件路径，upload 时表示目标目录路径；rename/delete 可为空并改用 file_id")
+    path: str = Field(
+        default="",
+        description="rename/delete 时为源文件路径；move/copy/upload 时为目标目录路径。rename/delete/move/copy 可改用 file_id/file_ids",
+    )
     file_id: Optional[int] = Field(
         default=None,
-        description="115 文件 ID。rename/delete 推荐优先传 file_id，避免路径重名或路径解析失败",
+        description="115 文件 ID。rename/delete/move/copy 推荐优先传 file_id，避免路径重名或路径解析失败",
+    )
+    file_ids: Optional[List[int]] = Field(
+        default=None,
+        description="批量 115 文件 ID。与 file_id 二选一，用于 delete/move/copy 的批量操作",
     )
     name: Optional[str] = Field(
         default=None,
-        description="rename 的新文件名，upload 时作为可选的新文件名",
+        description="rename 的新文件名；move/copy/upload 时作为可选的新文件名（批量时仅单文件有效）",
     )
     local_path: Optional[str] = Field(
         default=None,
@@ -469,7 +476,7 @@ class FlowpanStorageManageInput(BaseModel):
 class FlowpanStorageManageTool(MoviePilotTool):
     name: str = "flowpan_storage_manage"
     tags: list[str] = _tool_tags("Write", "File", "Directory", "Admin")
-    description: str = "对 Flowpan 115 存储中的文件执行重命名、删除或上传。"
+    description: str = "对 Flowpan 115 存储中的文件执行重命名、删除、复制、移动或上传。"
     require_admin: bool = True
     args_schema: Type[BaseModel] = FlowpanStorageManageInput
 
@@ -480,9 +487,10 @@ class FlowpanStorageManageTool(MoviePilotTool):
 
     async def run(
         self,
-        action: Literal["rename", "delete", "upload"],
+        action: Literal["rename", "delete", "move", "copy", "upload"],
         path: str = "",
         file_id: Optional[int] = None,
+        file_ids: Optional[List[int]] = None,
         name: Optional[str] = None,
         local_path: Optional[str] = None,
         **kwargs,
@@ -492,7 +500,21 @@ class FlowpanStorageManageTool(MoviePilotTool):
             return _dump({"success": False, "message": error})
 
         def _sync():
+            batch_ids: List[int] = []
+            seen_ids: set[int] = set()
+            for candidate in list(file_ids or []) + ([file_id] if file_id else []):
+                try:
+                    value = int(candidate)
+                except (TypeError, ValueError):
+                    continue
+                if value <= 0 or value in seen_ids:
+                    continue
+                seen_ids.add(value)
+                batch_ids.append(value)
+
             if action == "rename":
+                if batch_ids:
+                    return {"success": False, "message": "rename 不支持批量 file_ids，请一次处理一个文件"}
                 item = _resolve_item_or_id(plugin, path=path, file_id=file_id, strict=True, name=name or "")
                 if not item:
                     return {"success": False, "message": "rename 需要提供有效 path 或 file_id"}
@@ -508,7 +530,53 @@ class FlowpanStorageManageTool(MoviePilotTool):
                     "name": new_name,
                 }
 
+            if action == "move":
+                target_path = (path or "").strip()
+                if not target_path:
+                    return {"success": False, "message": "move 需要提供目标目录路径（path 参数）"}
+                if batch_ids:
+                    if name and len(batch_ids) > 1:
+                        return {"success": False, "message": "批量 move 不支持统一改名，请一次只传一个 file_id"}
+                    items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
+                    items = [item for item in items if item]
+                    if not items:
+                        return {"success": False, "message": "move 需要提供有效源文件 file_id/file_ids"}
+                    success = plugin.move_files(items, Path(target_path))
+                    return {
+                        "success": bool(success),
+                        "action": action,
+                        "target_path": target_path,
+                        "file_ids": batch_ids,
+                        "count": len(batch_ids),
+                    }
+                if not file_id:
+                    return {"success": False, "message": "move 需要提供源文件 file_id"}
+                target_name = (name or "").strip() or None
+                item = _item_from_file_id(plugin, file_id=file_id)
+                if not item:
+                    return {"success": False, "message": "move 需要提供有效源文件 file_id"}
+                success = plugin.move_file(item, Path(target_path), target_name)
+                return {
+                    "success": bool(success),
+                    "action": action,
+                    "target_path": target_path,
+                    "file_id": file_id,
+                    "name": target_name,
+                }
+
             if action == "delete":
+                if batch_ids:
+                    items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
+                    items = [item for item in items if item]
+                    if not items:
+                        return {"success": False, "message": "delete 需要提供有效 file_id/file_ids"}
+                    success = plugin.delete_files(items)
+                    return {
+                        "success": bool(success),
+                        "action": action,
+                        "file_ids": batch_ids,
+                        "count": len(batch_ids),
+                    }
                 item = _resolve_item_or_id(plugin, path=path, file_id=file_id, strict=True)
                 if not item:
                     return {"success": False, "message": "delete 需要提供有效 path 或 file_id"}
@@ -518,6 +586,40 @@ class FlowpanStorageManageTool(MoviePilotTool):
                     "action": action,
                     "path": path,
                     "file_id": file_id,
+                }
+
+            if action == "copy":
+                target_path = (path or "").strip()
+                if not target_path:
+                    return {"success": False, "message": "copy 需要提供目标目录路径（path 参数）"}
+                if batch_ids:
+                    if name and len(batch_ids) > 1:
+                        return {"success": False, "message": "批量 copy 不支持统一改名，请一次只传一个 file_id"}
+                    items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
+                    items = [item for item in items if item]
+                    if not items:
+                        return {"success": False, "message": "copy 需要提供有效源文件 file_id/file_ids"}
+                    success = plugin.copy_files(items, Path(target_path))
+                    return {
+                        "success": bool(success),
+                        "action": action,
+                        "target_path": target_path,
+                        "file_ids": batch_ids,
+                        "count": len(batch_ids),
+                    }
+                if not file_id:
+                    return {"success": False, "message": "copy 需要提供源文件 file_id"}
+                target_name = (name or "").strip() or None
+                item = _item_from_file_id(plugin, file_id=file_id)
+                if not item:
+                    return {"success": False, "message": "copy 需要提供有效源文件 file_id"}
+                success = plugin.copy_file(item, Path(target_path), target_name)
+                return {
+                    "success": bool(success),
+                    "action": action,
+                    "target_path": target_path,
+                    "file_id": file_id,
+                    "name": target_name,
                 }
 
             if action == "upload":

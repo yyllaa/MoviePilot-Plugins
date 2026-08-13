@@ -371,15 +371,18 @@ class FlowpanStorageAPI:
         return False
 
     def delete(self, fileitem: FileItem) -> bool:
-        file_id = self._file_id(fileitem)
-        if not file_id:
+        return self.delete_many([fileitem])
+
+    def delete_many(self, fileitems: List[FileItem]) -> bool:
+        file_ids = self._file_ids(fileitems)
+        if not file_ids:
             return False
         try:
-            self._api_endpoint("delete", {"ids": [file_id]})
+            self._api_endpoint("delete", {"ids": file_ids})
             self._clear_list_cache()
             return True
         except Exception as error:
-            logger.error(f"【Flowpan存储】删除失败 {getattr(fileitem, 'path', '')}: {error}")
+            logger.error(f"【Flowpan存储】删除失败 ids={file_ids}: {error}")
             return False
 
     def rename(self, fileitem: FileItem, name: str) -> bool:
@@ -395,11 +398,17 @@ class FlowpanStorageAPI:
             logger.error(f"【Flowpan存储】重命名失败 {getattr(fileitem, 'path', '')}: {error}")
             return False
 
-    def copy(self, fileitem: FileItem, path: Path, new_name: str) -> bool:
+    def copy(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None) -> bool:
         return self._copy_or_move(fileitem, path, new_name, action="copy")
 
-    def move(self, fileitem: FileItem, path: Path, new_name: str) -> bool:
+    def move(self, fileitem: FileItem, path: Path, new_name: Optional[str] = None) -> bool:
         return self._copy_or_move(fileitem, path, new_name, action="move")
+
+    def copy_many(self, fileitems: List[FileItem], path: Path) -> bool:
+        return self._copy_or_move_many(fileitems, path, action="copy")
+
+    def move_many(self, fileitems: List[FileItem], path: Path) -> bool:
+        return self._copy_or_move_many(fileitems, path, action="move")
 
     def download(self, fileitem: FileItem, path: Path = None) -> Optional[Path]:
         return None
@@ -539,13 +548,43 @@ class FlowpanStorageAPI:
             self._api_endpoint(endpoint, {"ids": [file_id], "parent_id": target_cid})
             self._clear_list_cache()
             current_name = (getattr(fileitem, "name", "") or Path(getattr(fileitem, "path", "")).name).strip()
-            if target_name and target_name != current_name:
+            requested_name = (new_name or "").strip()
+            if requested_name and requested_name != current_name:
+                if action == "move":
+                    return self.rename(fileitem, requested_name)
                 target_item = self.get_item(Path(posixpath.join(target_dir_path.rstrip("/") or "/", current_name)))
                 if target_item is not None:
-                    return self.rename(target_item, target_name)
+                    return self.rename(target_item, requested_name)
+                return False
             return True
         except Exception as error:
             logger.error(f"【Flowpan存储】{self.transtype.get(action, action)}失败 {getattr(fileitem, 'path', '')}: {error}")
+            return False
+
+    def _copy_or_move_many(
+        self,
+        fileitems: List[FileItem],
+        target_dir: Path,
+        action: str,
+    ) -> bool:
+        file_ids = self._file_ids(fileitems)
+        if not file_ids:
+            return False
+        target_dir_path = self._normalize_dir_path(Path(target_dir).as_posix())
+        try:
+            folder = self._api_endpoint("dir/ensure", {"path": target_dir_path})
+            target_cid = int(folder.get("cid") or 0)
+            endpoint = "copy" if action == "copy" else "move"
+            if action == "move" and self._storage_backend != "open":
+                self._api(
+                    self._endpoint("move/check-conflict"),
+                    {"ids": file_ids, "parent_id": target_cid},
+                )
+            self._api_endpoint(endpoint, {"ids": file_ids, "parent_id": target_cid})
+            self._clear_list_cache()
+            return True
+        except Exception as error:
+            logger.error(f"【Flowpan存储】{self.transtype.get(action, action)}批量失败 ids={file_ids}: {error}")
             return False
 
     def _list_cache_key(self, fileitem: FileItem) -> str:
@@ -647,6 +686,17 @@ class FlowpanStorageAPI:
         except Exception:
             return None
         return None
+
+    def _file_ids(self, fileitems: List[FileItem]) -> List[int]:
+        file_ids: List[int] = []
+        seen: set[int] = set()
+        for fileitem in fileitems or []:
+            file_id = self._file_id(fileitem)
+            if not file_id or file_id in seen:
+                continue
+            seen.add(file_id)
+            file_ids.append(file_id)
+        return file_ids
 
     @staticmethod
     def _dir_path(fileitem: FileItem) -> str:
