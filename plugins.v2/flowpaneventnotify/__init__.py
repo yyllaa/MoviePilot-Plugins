@@ -40,12 +40,12 @@ class FlowpanEventNotify(_PluginBase):
     """
 
     plugin_name = "Flowpan事件通知"
-    plugin_desc = "聚合115转移完成事件并通知Flowpan更新"
+    plugin_desc = "聚合115转移完成事件并通知Flowpan更新，支持Cookie/OpenAPI链路选择"
     plugin_icon = (
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.17"
+    plugin_version = "1.1.18"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"

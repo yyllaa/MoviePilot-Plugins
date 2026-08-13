@@ -1,13 +1,14 @@
 {
   "FlowpanEventNotify": {
     "name": "Flowpan事件通知",
-    "description": "聚合115转移完成事件并通知Flowpan更新，支持Flowpan 115原生上传桥接",
+    "description": "聚合115转移完成事件并通知Flowpan更新，支持Cookie/OpenAPI链路选择",
     "labels": "STRM",
-    "version": "1.1.17",
+    "version": "1.1.18",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "history": {
+      "v1.1.18": "新增Flowpan存储桥Cookie/OpenAPI链路选择，OpenAPI链路走Flowpan Open接口，上传断点状态按链路隔离",
       "v1.1.17": "修复大文件断点上传完成阶段偶发签名失效，支持刷新上传会话并保留已上传分片",
       "v1.1.16": "新增连接测试与目录缓存详情页，支持配置缓存 TTL 并显示缓存条数和缓存时间",
       "v1.1.15": "目录浏览优先使用 115 cid，减少路径反查导致的目录选择卡顿",
