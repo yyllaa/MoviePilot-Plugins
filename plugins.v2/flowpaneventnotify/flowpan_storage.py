@@ -49,6 +49,7 @@ class FlowpanStorageAPI:
         )
         self._list_cache: Dict[str, Tuple[float, List[FileItem]]] = {}
         self._list_cache_lock = RLock()
+        self._last_upload_error: Dict[str, Any] = {}
         try:
             cache_ttl = int(list_cache_ttl)
         except (TypeError, ValueError):
@@ -83,6 +84,11 @@ class FlowpanStorageAPI:
             progress_callback(8)
             target_cid = self._target_cid(target_dir, target_dir_path)
             if target_cid is None:
+                self._remember_upload_error(
+                    RuntimeError("目标目录不可用或无法解析 CID"),
+                    local_path=local_path,
+                    target_path=target_path,
+                )
                 return None
             progress_callback(9)
             state_key = self._state_key(local_path, target_path, file_size, file_sha1)
@@ -131,11 +137,22 @@ class FlowpanStorageAPI:
                 session = self._api_endpoint("upload/start", session)
             else:
                 session = self._api_endpoint("upload/list-parts", session)
+            session = self._annotate_upload_state(
+                session=session,
+                local_path=local_path,
+                target_path=target_path,
+                state_key=state_key,
+            )
             progress_callback(10)
             self._save_state(state_key, session)
             upload_id = session.get("upload_id")
             if not upload_id:
                 logger.error(f"【Flowpan存储】初始化分片失败: {session}")
+                self._remember_upload_error(
+                    RuntimeError("初始化分片失败，Flowpan 未返回 upload_id"),
+                    local_path=local_path,
+                    target_path=target_path,
+                )
                 return None
 
             part_size = int(session.get("part_size") or self._part_size)
@@ -195,6 +212,12 @@ class FlowpanStorageAPI:
                     )
                     session["parts"] = sorted(parts, key=lambda p: p["part_number"])
                     session["uploaded"] = uploaded + chunk_size
+                    session = self._annotate_upload_state(
+                        session=session,
+                        local_path=local_path,
+                        target_path=target_path,
+                        state_key=state_key,
+                    )
                     self._save_state(state_key, session)
                     uploaded += chunk_size
                     progress_callback(self._upload_progress(uploaded, file_size))
@@ -214,10 +237,15 @@ class FlowpanStorageAPI:
             progress_callback(100)
             self._drop_state(state_key)
             self._clear_list_cache()
+            self._last_upload_error = {}
             logger.info(f"【Flowpan存储】{target_name} 上传完成")
             return self._file_item_from_session(target_path, target_name, file_size, session)
         except Exception as error:
-            logger.error(f"【Flowpan存储】上传失败: {local_path} - {error}")
+            classified = self._remember_upload_error(error, local_path=local_path, target_path=target_path)
+            logger.error(
+                f"【Flowpan存储】上传失败: {local_path} - "
+                f"{classified['category']}：{classified['message']}"
+            )
             return None
 
     def create_folder(self, fileitem: FileItem, name: str) -> Optional[FileItem]:
@@ -440,6 +468,44 @@ class FlowpanStorageAPI:
         清空目录缓存。
         """
         self._clear_list_cache()
+
+    def upload_state_stats(self) -> Dict[str, Any]:
+        """
+        返回当前上传断点状态统计。
+        """
+        entries = self._upload_state_entries()
+        current = [item for item in entries if item.get("backend") in ("", self._storage_backend)]
+        current.sort(key=lambda item: int(item.get("updated_at") or 0), reverse=True)
+        total_size = sum(int(item.get("size") or 0) for item in current)
+        total_uploaded = sum(int(item.get("uploaded") or 0) for item in current)
+        return {
+            "backend": self._storage_backend,
+            "state_dir": self._state_dir.as_posix(),
+            "entry_count": len(current),
+            "all_entry_count": len(entries),
+            "uploaded": total_uploaded,
+            "size": total_size,
+            "entries": current,
+            "last_error": dict(self._last_upload_error),
+        }
+
+    def clear_upload_states(self, current_backend_only: bool = True) -> int:
+        """
+        清理上传断点状态文件。
+        """
+        removed = 0
+        for entry in self._upload_state_entries():
+            if current_backend_only and entry.get("backend") not in ("", self._storage_backend):
+                continue
+            state_file = Path(str(entry.get("file") or ""))
+            if not state_file.exists():
+                continue
+            try:
+                state_file.unlink()
+                removed += 1
+            except Exception as error:
+                logger.warning(f"【Flowpan存储】清理断点状态失败 {state_file}: {error}")
+        return removed
 
     def support_transtype(self) -> dict:
         return self.transtype
@@ -706,6 +772,62 @@ class FlowpanStorageAPI:
             pickcode=data.get("pickcode") or None,
         )
 
+    def _annotate_upload_state(
+        self,
+        session: Dict[str, Any],
+        local_path: Path,
+        target_path: str,
+        state_key: str,
+    ) -> Dict[str, Any]:
+        session = dict(session or {})
+        now = int(time.time())
+        session.setdefault("created_at", now)
+        session["updated_at"] = now
+        session["state_key"] = state_key
+        session["storage_backend"] = self._storage_backend
+        session["local_path"] = local_path.as_posix()
+        session["target_path"] = target_path
+        session["target_name"] = Path(target_path).name
+        return session
+
+    def _upload_state_entries(self) -> List[Dict[str, Any]]:
+        if not self._state_dir.exists():
+            return []
+        entries: List[Dict[str, Any]] = []
+        for state_file in sorted(self._state_dir.glob("*.json")):
+            try:
+                with state_file.open("r", encoding="utf-8") as fileobj:
+                    data = json.load(fileobj)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            parts = data.get("parts") or []
+            uploaded = int(data.get("uploaded") or 0)
+            if not uploaded:
+                uploaded = sum(int(part.get("size") or 0) for part in parts if isinstance(part, dict))
+            size = int(data.get("size") or 0)
+            percent = round(uploaded * 100 / size, 1) if size > 0 else 0
+            entries.append(
+                {
+                    "key": data.get("state_key") or state_file.stem,
+                    "file": state_file.as_posix(),
+                    "backend": str(data.get("storage_backend") or "").strip().lower(),
+                    "name": data.get("target_name") or data.get("name") or "",
+                    "local_path": data.get("local_path") or "",
+                    "target_path": data.get("target_path") or data.get("target") or "",
+                    "upload_id": data.get("upload_id") or "",
+                    "size": size,
+                    "uploaded": uploaded,
+                    "percent": percent,
+                    "part_size": int(data.get("part_size") or 0),
+                    "part_count": len(parts),
+                    "created_at": int(data.get("created_at") or 0),
+                    "updated_at": int(data.get("updated_at") or 0),
+                }
+            )
+        return entries
+
     def _state_key(self, local_path: Path, target_path: str, size: int, sha1: str) -> str:
         raw = f"{self._storage_backend}|{local_path.as_posix()}|{target_path}|{size}|{sha1}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -739,3 +861,57 @@ class FlowpanStorageAPI:
             self._state_file(key).unlink(missing_ok=True)
         except Exception:
             pass
+
+    def _remember_upload_error(
+        self,
+        error: Exception,
+        local_path: Path,
+        target_path: str,
+    ) -> Dict[str, Any]:
+        classified = self._classify_upload_error(error)
+        classified.update(
+            {
+                "at": int(time.time()),
+                "backend": self._storage_backend,
+                "local_path": Path(local_path).as_posix(),
+                "target_path": target_path,
+            }
+        )
+        self._last_upload_error = classified
+        return classified
+
+    @staticmethod
+    def _classify_upload_error(error: Exception) -> Dict[str, str]:
+        raw = str(error or "").strip()
+        lowered = raw.lower()
+        if "restart_required" in lowered or "signaturedoesnotmatch" in lowered:
+            category = "断点会话失效"
+            message = "115 OSS 分片会话或签名已失效，已清理断点状态，请重新上传。"
+        elif "openapi access token" in lowered or "open" in lowered and "login" in lowered:
+            category = "Open 未登录"
+            message = "Flowpan OpenAPI 登录态不可用，请在 Flowpan-light 重新登录 Open。"
+        elif "cookie" in lowered and ("未登录" in raw or "login" in lowered or "required" in lowered):
+            category = "Cookie 未登录"
+            message = "Flowpan Cookie 登录态不可用，请更新 115 Cookie。"
+        elif "part " in lowered and "http" in lowered:
+            category = "OSS 分片上传失败"
+            message = raw
+        elif "missing etag" in lowered:
+            category = "OSS 分片响应异常"
+            message = "115 OSS 已响应但缺少 ETag，无法安全完成分片上传。"
+        elif "target cid" in lowered or "目标目录" in raw or "解析目标目录" in raw:
+            category = "目标目录异常"
+            message = "目标目录不可用或无法解析 CID，请重新选择上传目录。"
+        elif "upload_id" in lowered or "初始化分片" in raw:
+            category = "分片初始化失败"
+            message = "Flowpan 未返回有效 upload_id，请检查当前链路上传初始化接口。"
+        elif "sign" in lowered or "秒传" in raw:
+            category = "秒传校验失败"
+            message = raw
+        elif "flowpan http" in lowered:
+            category = "Flowpan 接口失败"
+            message = raw
+        else:
+            category = "上传失败"
+            message = raw or error.__class__.__name__
+        return {"category": category, "message": message}

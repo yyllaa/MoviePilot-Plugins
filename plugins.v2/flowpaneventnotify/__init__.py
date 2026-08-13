@@ -45,7 +45,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.20"
+    plugin_version = "1.1.21"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -193,6 +193,14 @@ class FlowpanEventNotify(_PluginBase):
                 "methods": ["POST"],
                 "summary": "连接测试",
                 "description": "测试 Flowpan 115 存储桥连通性、鉴权与目录缓存状态",
+            },
+            {
+                "path": "/clear_upload_states",
+                "endpoint": self.clear_upload_states,
+                "auth": "bear",
+                "methods": ["POST"],
+                "summary": "清理上传断点",
+                "description": "清理当前 Flowpan 链路的上传断点状态",
             }
         ]
 
@@ -212,7 +220,9 @@ class FlowpanEventNotify(_PluginBase):
         """
         connection = self._build_connection_summary()
         cache = self._build_cache_summary()
+        upload_state = self._build_upload_state_summary()
         cache_entries = cache.get("entries") or []
+        upload_entries = upload_state.get("entries") or []
         backend_text = "OpenAPI" if self._storage_backend == "open" else "Cookie"
         cache_color = "success" if cache.get("enabled_text") == "启用" else "warning"
         metric_chips = [
@@ -434,6 +444,150 @@ class FlowpanEventNotify(_PluginBase):
                                     ],
                                 }
                                 for entry in cache_entries[:10]
+                            ],
+                            {
+                                "component": "VDivider",
+                                "props": {"class": "my-4"},
+                            },
+                            {
+                                "component": "VRow",
+                                "props": {"align": "center", "class": "mb-2"},
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "sm": 7},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-subtitle-2 font-weight-bold"},
+                                                "text": "上传断点",
+                                            },
+                                            {
+                                                "component": "div",
+                                                "props": {"class": "text-body-2 text-medium-emphasis mt-1"},
+                                                "text": upload_state["summary"],
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "sm": 5},
+                                        "content": [
+                                            {
+                                                "component": "VBtn",
+                                                "props": {
+                                                    "color": "warning",
+                                                    "variant": "tonal",
+                                                    "prepend-icon": "mdi-broom",
+                                                    "block": True,
+                                                    "disabled": upload_state["entry_count"] <= 0,
+                                                },
+                                                "text": "清理当前链路断点",
+                                                "events": {
+                                                    "click": {
+                                                        "api": "plugin/FlowpanEventNotify/clear_upload_states",
+                                                        "method": "post",
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "d-flex flex-wrap ga-2 mb-3"},
+                                "content": [
+                                    {
+                                        "component": "VChip",
+                                        "props": {
+                                            "color": upload_state["tone"],
+                                            "variant": "tonal",
+                                            "size": "small",
+                                            "prepend-icon": "mdi-cloud-upload-outline",
+                                        },
+                                        "text": f"断点数: {upload_state['entry_count']}",
+                                    },
+                                    {
+                                        "component": "VChip",
+                                        "props": {
+                                            "color": "secondary",
+                                            "variant": "tonal",
+                                            "size": "small",
+                                            "prepend-icon": "mdi-progress-upload",
+                                        },
+                                        "text": f"已传: {upload_state['uploaded_text']} / {upload_state['size_text']}",
+                                    },
+                                    {
+                                        "component": "VChip",
+                                        "props": {
+                                            "color": "secondary",
+                                            "variant": "tonal",
+                                            "size": "small",
+                                            "prepend-icon": "mdi-folder-cog-outline",
+                                        },
+                                        "text": f"全部状态: {upload_state['all_entry_count']}",
+                                    },
+                                ],
+                            },
+                            *(
+                                [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "error",
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "class": "mb-3",
+                                        },
+                                        "text": (
+                                            f"最近上传错误：{upload_state['last_error']['category']} - "
+                                            f"{upload_state['last_error']['message']}"
+                                        ),
+                                    }
+                                ]
+                                if upload_state.get("last_error")
+                                else []
+                            ),
+                            *[
+                                {
+                                    "component": "div",
+                                    "props": {"class": "rounded border pa-3 mb-2"},
+                                    "content": [
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "text-body-2 font-weight-medium text-truncate mb-2"},
+                                            "text": entry["name"] or entry["target_path"] or entry["local_path"],
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "text-caption text-medium-emphasis text-truncate mb-2"},
+                                            "text": entry["target_path"] or entry["local_path"],
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "d-flex flex-wrap ga-2"},
+                                            "content": [
+                                                {
+                                                    "component": "VChip",
+                                                    "props": {"size": "x-small", "variant": "tonal"},
+                                                    "text": f"{entry['percent']}%",
+                                                },
+                                                {
+                                                    "component": "VChip",
+                                                    "props": {"size": "x-small", "variant": "tonal"},
+                                                    "text": f"{entry['part_count']} 分片",
+                                                },
+                                                {
+                                                    "component": "VChip",
+                                                    "props": {"size": "x-small", "variant": "tonal"},
+                                                    "text": f"更新 {entry['updated_text']}",
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                }
+                                for entry in upload_entries[:5]
                             ],
                         ],
                     }
@@ -763,6 +917,29 @@ class FlowpanEventNotify(_PluginBase):
                 "msg": f"连接测试失败: {error}",
             }
 
+    def clear_upload_states(self) -> Dict[str, Any]:
+        """
+        清理当前链路上传断点。
+        """
+        if not self._storage_api:
+            return {
+                "code": 1,
+                "msg": "存储桥未初始化，无法清理上传断点",
+            }
+        try:
+            removed = self._storage_api.clear_upload_states(current_backend_only=True)
+            return {
+                "code": 0,
+                "msg": f"已清理当前链路上传断点 {removed} 条",
+                "data": {"removed": removed, "backend": self._storage_backend},
+            }
+        except Exception as error:
+            logger.error(f"【Flowpan事件通知】清理上传断点失败: {error}", exc_info=True)
+            return {
+                "code": 1,
+                "msg": f"清理上传断点失败: {error}",
+            }
+
     @eventmanager.register(ChainEventType.StorageOperSelection)
     def storage_oper_selection(self, event: Event) -> None:
         """
@@ -937,6 +1114,53 @@ class FlowpanEventNotify(_PluginBase):
             "latest_text": self._format_ts(latest_cached_at),
             "oldest_text": self._format_ts(oldest_cached_at),
             "time_summary": f"设置 TTL：{ttl_seconds} 秒",
+            "entries": entries,
+        }
+
+    def _build_upload_state_summary(self) -> Dict[str, Any]:
+        if not self._storage_api:
+            return {
+                "tone": "warning",
+                "summary": "存储桥未初始化，无法读取上传断点。",
+                "entry_count": 0,
+                "all_entry_count": 0,
+                "uploaded_text": "0 B",
+                "size_text": "0 B",
+                "last_error": {},
+                "entries": [],
+            }
+        stats = self._storage_api.upload_state_stats()
+        entry_count = int(stats.get("entry_count") or 0)
+        all_entry_count = int(stats.get("all_entry_count") or 0)
+        uploaded = int(stats.get("uploaded") or 0)
+        size = int(stats.get("size") or 0)
+        last_error = dict(stats.get("last_error") or {})
+        if last_error:
+            last_error["at_text"] = self._format_ts(int(last_error.get("at") or 0))
+        entries: List[Dict[str, Any]] = []
+        for item in stats.get("entries") or []:
+            updated_at = int(item.get("updated_at") or 0)
+            entries.append(
+                {
+                    "name": item.get("name") or "",
+                    "target_path": item.get("target_path") or "",
+                    "local_path": item.get("local_path") or "",
+                    "percent": item.get("percent") or 0,
+                    "part_count": int(item.get("part_count") or 0),
+                    "updated_text": self._format_ts(updated_at),
+                }
+            )
+        return {
+            "tone": "warning" if entry_count else "success",
+            "summary": (
+                f"当前 {self._storage_backend} 链路保留 {entry_count} 条断点，"
+                f"已记录 {self._format_size_text(uploaded)} / {self._format_size_text(size)}。"
+            ),
+            "entry_count": entry_count,
+            "all_entry_count": all_entry_count,
+            "uploaded_text": self._format_size_text(uploaded),
+            "size_text": self._format_size_text(size),
+            "last_error": last_error,
             "entries": entries,
         }
 

@@ -3,11 +3,12 @@
     "name": "Flowpan事件通知",
     "description": "聚合115转移完成事件并通知Flowpan更新，支持Cookie/OpenAPI链路选择",
     "labels": "STRM",
-    "version": "1.1.20",
+    "version": "1.1.21",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "history": {
+      "v1.1.21": "新增上传断点状态面板和当前链路断点清理，上传失败日志按Open登录、Cookie登录、OSS分片、目标目录和签名失效分类",
       "v1.1.20": "目录缓存按Cookie/OpenAPI链路隔离，连接测试页明确展示当前链路缓存状态",
       "v1.1.19": "优化连接测试页面布局，压缩移动端状态、链路和目录缓存信息展示",
       "v1.1.18": "新增Flowpan存储桥Cookie/OpenAPI链路选择，OpenAPI链路走Flowpan Open接口，上传断点状态按链路隔离",
