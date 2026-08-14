@@ -502,7 +502,7 @@ class FlowpanStorageManageTool(MoviePilotTool):
         def _sync():
             batch_ids: List[int] = []
             seen_ids: set[int] = set()
-            for candidate in list(file_ids or []) + ([file_id] if file_id else []):
+            for candidate in list(file_ids or []):
                 try:
                     value = int(candidate)
                 except (TypeError, ValueError):
@@ -535,7 +535,7 @@ class FlowpanStorageManageTool(MoviePilotTool):
                 if not target_path:
                     return {"success": False, "message": "move 需要提供目标目录路径（path 参数）"}
                 if batch_ids:
-                    if name and len(batch_ids) > 1:
+                    if name:
                         return {"success": False, "message": "批量 move 不支持统一改名，请一次只传一个 file_id"}
                     items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
                     items = [item for item in items if item]
@@ -593,7 +593,7 @@ class FlowpanStorageManageTool(MoviePilotTool):
                 if not target_path:
                     return {"success": False, "message": "copy 需要提供目标目录路径（path 参数）"}
                 if batch_ids:
-                    if name and len(batch_ids) > 1:
+                    if name:
                         return {"success": False, "message": "批量 copy 不支持统一改名，请一次只传一个 file_id"}
                     items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
                     items = [item for item in items if item]

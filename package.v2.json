@@ -3,11 +3,12 @@
     "name": "Flowpan事件通知",
     "description": "聚合115转移完成事件并通知Flowpan更新，支持Cookie/OpenAPI链路选择",
     "labels": "STRM",
-    "version": "1.1.22",
+    "version": "1.1.23",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "history": {
+      "v1.1.23": "修复Agent存储工具单文件移动或复制携带name时误走批量分支，支持单文件move/copy改名",
       "v1.1.22": "Agent存储工具支持批量删除、复制和移动文件，补齐Flowpan存储桥批量文件管理能力",
       "v1.1.21": "新增上传断点状态面板和当前链路断点清理，上传失败日志按Open登录、Cookie登录、OSS分片、目标目录和签名失效分类",
       "v1.1.20": "目录缓存按Cookie/OpenAPI链路隔离，连接测试页明确展示当前链路缓存状态",
