@@ -18,8 +18,10 @@ from .agent_tools import (
     FlowpanStorageItemTool,
     FlowpanStorageListTool,
     FlowpanStorageManageTool,
+    FlowpanStorageRecycleTool,
     FlowpanStorageSearchTool,
     FlowpanStorageUsageTool,
+    FlowpanStorageVideoHistoryTool,
 )
 from .flowpan_storage import FlowpanStorageAPI
 
@@ -45,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.23"
+    plugin_version = "1.1.25"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -639,6 +641,8 @@ class FlowpanEventNotify(_PluginBase):
             FlowpanStorageSearchTool,
             FlowpanStorageFolderTool,
             FlowpanStorageManageTool,
+            FlowpanStorageRecycleTool,
+            FlowpanStorageVideoHistoryTool,
         ]
 
     def get_form(self) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -1082,6 +1086,51 @@ class FlowpanEventNotify(_PluginBase):
         if not self._storage_api:
             return None
         return self._storage_api.support_transtype()
+
+    def recycle_preview(self, days: int = 0, account: str = ""):
+        if not self._storage_api:
+            return None
+        return self._storage_api.recycle_preview(days=days, account=account)
+
+    def recycle_clean(self, days: int = 0, confirm: str = "", password: str = "", account: str = ""):
+        if not self._storage_api:
+            return None
+        return self._storage_api.recycle_clean(
+            days=days,
+            confirm=confirm,
+            password=password,
+            account=account,
+        )
+
+    def recycle_revert(self, ids: List[str], account: str = ""):
+        if not self._storage_api:
+            return None
+        return self._storage_api.recycle_revert(ids=ids, account=account)
+
+    def video_history(self, pickcode: str):
+        if not self._storage_api:
+            return None
+        return self._storage_api.video_history(pickcode)
+
+    def video_save_history(
+        self,
+        pickcode: str,
+        time_value: int = 0,
+        watch_end: int = 0,
+        definition: int = 0,
+        category: int = 0,
+        share_id: str = "",
+    ):
+        if not self._storage_api:
+            return None
+        return self._storage_api.video_save_history(
+            pickcode=pickcode,
+            time_value=time_value,
+            watch_end=watch_end,
+            definition=definition,
+            category=category,
+            share_id=share_id,
+        )
 
     def _build_connection_summary(self) -> Dict[str, str]:
         if not self._storage_bridge_enabled:

@@ -463,9 +463,13 @@ class FlowpanStorageManageInput(BaseModel):
         default=None,
         description="批量 115 文件 ID。与 file_id 二选一，用于 delete/move/copy 的批量操作",
     )
+    source_path: Optional[str] = Field(
+        default=None,
+        description="源文件完整路径。move/copy 单文件且需要改名时建议提供，用于解析真实源文件；不提供时使用 file_id",
+    )
     name: Optional[str] = Field(
         default=None,
-        description="rename 的新文件名；move/copy/upload 时作为可选的新文件名（批量时仅单文件有效）",
+        description="rename 的新文件名；move/copy/upload 时作为可选的新文件名（批量 move/copy 不支持统一改名）",
     )
     local_path: Optional[str] = Field(
         default=None,
@@ -491,6 +495,7 @@ class FlowpanStorageManageTool(MoviePilotTool):
         path: str = "",
         file_id: Optional[int] = None,
         file_ids: Optional[List[int]] = None,
+        source_path: Optional[str] = None,
         name: Optional[str] = None,
         local_path: Optional[str] = None,
         **kwargs,
@@ -535,6 +540,8 @@ class FlowpanStorageManageTool(MoviePilotTool):
                 if not target_path:
                     return {"success": False, "message": "move 需要提供目标目录路径（path 参数）"}
                 if batch_ids:
+                    if source_path:
+                        return {"success": False, "message": "批量 move 不支持 source_path，请一次只传一个源文件"}
                     if name:
                         return {"success": False, "message": "批量 move 不支持统一改名，请一次只传一个 file_id"}
                     items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
@@ -549,18 +556,24 @@ class FlowpanStorageManageTool(MoviePilotTool):
                         "file_ids": batch_ids,
                         "count": len(batch_ids),
                     }
-                if not file_id:
-                    return {"success": False, "message": "move 需要提供源文件 file_id"}
+                source_path_value = (source_path or "").strip()
+                if not file_id and not source_path_value:
+                    return {"success": False, "message": "move 需要提供源文件 file_id 或 source_path"}
                 target_name = (name or "").strip() or None
-                item = _item_from_file_id(plugin, file_id=file_id)
+                item = (
+                    _resolve_item(plugin, source_path_value, strict=True)
+                    if source_path_value
+                    else _item_from_file_id(plugin, file_id=file_id)
+                )
                 if not item:
-                    return {"success": False, "message": "move 需要提供有效源文件 file_id"}
+                    return {"success": False, "message": "move 需要提供有效源文件 file_id 或 source_path"}
                 success = plugin.move_file(item, Path(target_path), target_name)
                 return {
                     "success": bool(success),
                     "action": action,
                     "target_path": target_path,
                     "file_id": file_id,
+                    "source_path": source_path_value or None,
                     "name": target_name,
                 }
 
@@ -593,6 +606,8 @@ class FlowpanStorageManageTool(MoviePilotTool):
                 if not target_path:
                     return {"success": False, "message": "copy 需要提供目标目录路径（path 参数）"}
                 if batch_ids:
+                    if source_path:
+                        return {"success": False, "message": "批量 copy 不支持 source_path，请一次只传一个源文件"}
                     if name:
                         return {"success": False, "message": "批量 copy 不支持统一改名，请一次只传一个 file_id"}
                     items = [_item_from_file_id(plugin, file_id=value) for value in batch_ids]
@@ -607,18 +622,24 @@ class FlowpanStorageManageTool(MoviePilotTool):
                         "file_ids": batch_ids,
                         "count": len(batch_ids),
                     }
-                if not file_id:
-                    return {"success": False, "message": "copy 需要提供源文件 file_id"}
+                source_path_value = (source_path or "").strip()
+                if not file_id and not source_path_value:
+                    return {"success": False, "message": "copy 需要提供源文件 file_id 或 source_path"}
                 target_name = (name or "").strip() or None
-                item = _item_from_file_id(plugin, file_id=file_id)
+                item = (
+                    _resolve_item(plugin, source_path_value, strict=True)
+                    if source_path_value
+                    else _item_from_file_id(plugin, file_id=file_id)
+                )
                 if not item:
-                    return {"success": False, "message": "copy 需要提供有效源文件 file_id"}
+                    return {"success": False, "message": "copy 需要提供有效源文件 file_id 或 source_path"}
                 success = plugin.copy_file(item, Path(target_path), target_name)
                 return {
                     "success": bool(success),
                     "action": action,
                     "target_path": target_path,
                     "file_id": file_id,
+                    "source_path": source_path_value or None,
                     "name": target_name,
                 }
 
@@ -648,6 +669,174 @@ class FlowpanStorageManageTool(MoviePilotTool):
             return _dump({"success": False, "message": str(err)})
 
 
+class FlowpanStorageRecycleInput(BaseModel):
+    """Flowpan 115 回收站操作输入。"""
+
+    action: Literal["preview", "clean", "revert"] = Field(
+        ...,
+        description="preview: 预览待清理项目；clean: 按保留天数清理回收站；revert: 按回收站ID还原项目",
+    )
+    days: int = Field(default=0, description="clean/preview 的保留天数，0 表示不过滤删除时间")
+    account: str = Field(default="", description="账号范围：默认大号；Cookie 链路可用 sub115 或 pool:<id>，OpenAPI 仅支持大号")
+    ids: Optional[List[str]] = Field(default=None, description="revert 需要的回收站项目 ID 列表")
+    confirm: str = Field(default="", description="clean 必须填写：清空回收站")
+    password: str = Field(default="", description="Cookie 链路清理回收站的 6 位安全密钥；不填时使用 Flowpan 配置")
+
+
+class FlowpanStorageRecycleTool(MoviePilotTool):
+    name: str = "flowpan_storage_recycle"
+    tags: list[str] = _tool_tags("Write", "Admin")
+    description: str = "通过 Flowpan 115 存储桥预览、清理或按ID还原回收站。"
+    require_admin: bool = True
+    args_schema: Type[BaseModel] = FlowpanStorageRecycleInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        return f"Flowpan 回收站操作: {kwargs.get('action', '')}"
+
+    async def run(
+        self,
+        action: Literal["preview", "clean", "revert"],
+        days: int = 0,
+        account: str = "",
+        ids: Optional[List[str]] = None,
+        confirm: str = "",
+        password: str = "",
+        **kwargs,
+    ) -> str:
+        plugin, error = _get_plugin()
+        if not plugin:
+            return _dump({"success": False, "message": error})
+
+        def _sync():
+            if action == "preview":
+                data = plugin.recycle_preview(days=days, account=account)
+                return {
+                    "success": data is not None,
+                    "action": action,
+                    "backend": str(getattr(plugin, "_storage_backend", "") or "cookie"),
+                    "data": data,
+                }
+
+            if action == "clean":
+                if str(confirm or "").strip() != "清空回收站":
+                    return {"success": False, "message": "clean 需要 confirm=清空回收站"}
+                data = plugin.recycle_clean(
+                    days=days,
+                    confirm=confirm,
+                    password=password,
+                    account=account,
+                )
+                return {
+                    "success": data is not None,
+                    "action": action,
+                    "backend": str(getattr(plugin, "_storage_backend", "") or "cookie"),
+                    "data": data,
+                }
+
+            if action == "revert":
+                clean_ids = [str(item).strip() for item in (ids or []) if str(item).strip()]
+                if not clean_ids:
+                    return {"success": False, "message": "revert 需要提供 ids"}
+                data = plugin.recycle_revert(ids=clean_ids, account=account)
+                return {
+                    "success": data is not None,
+                    "action": action,
+                    "backend": str(getattr(plugin, "_storage_backend", "") or "cookie"),
+                    "ids": clean_ids,
+                    "data": data,
+                }
+
+            return {"success": False, "message": f"不支持的回收站操作: {action}"}
+
+        try:
+            result = await run_agent_blocking("storage", _sync)
+            logger.info("执行工具: %s", self.name)
+            return _dump(result)
+        except Exception as err:
+            logger.error("Flowpan 回收站操作失败: %s", err, exc_info=True)
+            return _dump({"success": False, "message": str(err)})
+
+
+class FlowpanStorageVideoHistoryInput(BaseModel):
+    """Flowpan 115 视频播放进度输入。"""
+
+    action: Literal["get", "save"] = Field(
+        ...,
+        description="get: 读取播放进度；save: 写入播放进度",
+    )
+    pickcode: str = Field(..., description="115 文件 pickcode")
+    time: int = Field(default=0, description="save 时写入的播放秒数")
+    watch_end: int = Field(default=0, description="save 时是否已看完，0/1")
+    definition: int = Field(default=0, description="Cookie 链路可选清晰度参数")
+    category: int = Field(default=0, description="Cookie 链路可选分类参数")
+    share_id: str = Field(default="", description="Cookie 链路可选分享 ID")
+
+
+class FlowpanStorageVideoHistoryTool(MoviePilotTool):
+    name: str = "flowpan_storage_video_history"
+    tags: list[str] = _tool_tags("Read", "Write", "File", "Admin")
+    description: str = "通过 Flowpan 115 存储桥读取或写入视频播放进度。"
+    require_admin: bool = True
+    args_schema: Type[BaseModel] = FlowpanStorageVideoHistoryInput
+
+    def get_tool_message(self, **kwargs) -> Optional[str]:
+        return f"Flowpan 视频进度: {kwargs.get('action', '')}"
+
+    async def run(
+        self,
+        action: Literal["get", "save"],
+        pickcode: str,
+        time: int = 0,
+        watch_end: int = 0,
+        definition: int = 0,
+        category: int = 0,
+        share_id: str = "",
+        **kwargs,
+    ) -> str:
+        plugin, error = _get_plugin()
+        if not plugin:
+            return _dump({"success": False, "message": error})
+
+        def _sync():
+            clean_pickcode = str(pickcode or "").strip()
+            if not clean_pickcode:
+                return {"success": False, "message": "pickcode 不能为空"}
+            if action == "get":
+                data = plugin.video_history(clean_pickcode)
+                return {
+                    "success": data is not None,
+                    "action": action,
+                    "backend": str(getattr(plugin, "_storage_backend", "") or "cookie"),
+                    "pickcode": clean_pickcode,
+                    "data": data,
+                }
+            if action == "save":
+                data = plugin.video_save_history(
+                    pickcode=clean_pickcode,
+                    time_value=time,
+                    watch_end=watch_end,
+                    definition=definition,
+                    category=category,
+                    share_id=share_id,
+                )
+                return {
+                    "success": data is not None,
+                    "action": action,
+                    "backend": str(getattr(plugin, "_storage_backend", "") or "cookie"),
+                    "pickcode": clean_pickcode,
+                    "data": data,
+                }
+            return {"success": False, "message": f"不支持的视频进度操作: {action}"}
+
+        try:
+            result = await run_agent_blocking("storage", _sync)
+            logger.info("执行工具: %s", self.name)
+            return _dump(result)
+        except Exception as err:
+            logger.error("Flowpan 视频进度操作失败: %s", err, exc_info=True)
+            return _dump({"success": False, "message": str(err)})
+
+
 __all__ = [
     "FlowpanStorageUsageTool",
     "FlowpanStorageListTool",
@@ -656,4 +845,6 @@ __all__ = [
     "FlowpanStorageSearchTool",
     "FlowpanStorageFolderTool",
     "FlowpanStorageManageTool",
+    "FlowpanStorageRecycleTool",
+    "FlowpanStorageVideoHistoryTool",
 ]

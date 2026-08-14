@@ -424,6 +424,59 @@ class FlowpanStorageAPI:
             logger.warning(f"【Flowpan存储】读取容量失败: {error}")
             return StorageUsage(total=0, available=0)
 
+    def recycle_preview(self, days: int = 0, account: str = "") -> Dict[str, Any]:
+        return self._api_endpoint(
+            "recycle/preview",
+            {"days": int(days or 0), "account": str(account or "").strip()},
+        )
+
+    def recycle_clean(
+        self,
+        days: int = 0,
+        confirm: str = "",
+        password: str = "",
+        account: str = "",
+    ) -> Dict[str, Any]:
+        payload = {
+            "days": int(days or 0),
+            "confirm": str(confirm or "").strip(),
+            "password": str(password or "").strip(),
+            "account": str(account or "").strip(),
+        }
+        return self._api_endpoint("recycle/clean", payload)
+
+    def recycle_revert(self, ids: List[str], account: str = "") -> Dict[str, Any]:
+        payload = {
+            "ids": [str(item).strip() for item in (ids or []) if str(item).strip()],
+            "account": str(account or "").strip(),
+        }
+        return self._api_endpoint("recycle/revert", payload)
+
+    def video_history(self, pickcode: str) -> Dict[str, Any]:
+        return self._api_endpoint("video/history", {"pickcode": str(pickcode or "").strip()})
+
+    def video_save_history(
+        self,
+        pickcode: str,
+        time_value: int = 0,
+        watch_end: int = 0,
+        definition: int = 0,
+        category: int = 0,
+        share_id: str = "",
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"pickcode": str(pickcode or "").strip()}
+        if time_value:
+            payload["time"] = int(time_value)
+        if watch_end:
+            payload["watch_end"] = int(watch_end)
+        if definition:
+            payload["definition"] = int(definition)
+        if category:
+            payload["category"] = int(category)
+        if str(share_id or "").strip():
+            payload["share_id"] = str(share_id or "").strip()
+        return self._api_endpoint("video/history/save", payload)
+
     def probe_connection(self) -> Dict[str, Any]:
         """
         探测 Flowpan / 115 存储桥连通性与鉴权状态。
