@@ -298,6 +298,12 @@ class FlowpanStorageAPI:
         return self.get_item(Path(fileitem.path)) is not None
 
     def list(self, fileitem: FileItem) -> List[FileItem]:
+        if self._should_return_file_detail(fileitem):
+            item = self.detail(fileitem)
+            if item is not None and getattr(item, "type", "") != "dir":
+                return [item]
+            if str(getattr(fileitem, "type", "") or "").lower() == "file":
+                return [fileitem]
         cache_key = self._list_cache_key(fileitem)
         cached = self._get_list_cache(cache_key)
         if cached is not None:
@@ -973,6 +979,18 @@ class FlowpanStorageAPI:
         if not value.startswith("/"):
             value = "/" + value
         return value if value.endswith("/") else value + "/"
+
+    @staticmethod
+    def _should_return_file_detail(fileitem: FileItem) -> bool:
+        item_type = str(getattr(fileitem, "type", "") or "").lower()
+        if item_type == "file":
+            return True
+        if item_type == "dir":
+            return False
+        if getattr(fileitem, "extension", None):
+            return True
+        item_path = str(getattr(fileitem, "path", "") or "")
+        return bool(item_path and not item_path.endswith("/") and Path(item_path).suffix)
 
     @staticmethod
     def _normalize_dir_path(value: str) -> str:
