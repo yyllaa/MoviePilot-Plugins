@@ -14,6 +14,17 @@ from app.log import logger
 from app.modules.filemanager.storages import transfer_process
 from app.schemas import FileItem, StorageUsage
 
+FLOWPAN_API_RETRY_DELAYS = (0.0, 0.6, 1.5)
+FLOWPAN_PART_RETRY_DELAYS = (0.0, 1.0, 3.0)
+FLOWPAN_EXISTS_FALLBACK_DELAYS = (0.0, 0.3, 1.2)
+FLOWPAN_RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+FLOWPAN_RETRY_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ContentDecodingError,
+)
+
 
 class FlowpanStorageAPI:
     """
@@ -48,6 +59,7 @@ class FlowpanStorageAPI:
             / "upload-state"
         )
         self._list_cache: Dict[str, Tuple[float, List[FileItem]]] = {}
+        self._folder_cache: Dict[str, Tuple[float, FileItem]] = {}
         self._list_cache_lock = RLock()
         self._last_upload_error: Dict[str, Any] = {}
         try:
@@ -95,7 +107,7 @@ class FlowpanStorageAPI:
             session = self._load_state(state_key) or {}
             if session:
                 try:
-                    session = self._api_endpoint("upload/resume", session)
+                    session = self._api_endpoint("upload/resume", session, retryable=True)
                     logger.info(f"【Flowpan存储】恢复断点上传: {target_name}")
                 except Exception as error:
                     logger.warning(f"【Flowpan存储】断点恢复失败，重新初始化: {error}")
@@ -136,7 +148,7 @@ class FlowpanStorageAPI:
             if not session.get("upload_id"):
                 session = self._api_endpoint("upload/start", session)
             else:
-                session = self._api_endpoint("upload/list-parts", session)
+                session = self._api_endpoint("upload/list-parts", session, retryable=True)
             session = self._annotate_upload_state(
                 session=session,
                 local_path=local_path,
@@ -189,20 +201,9 @@ class FlowpanStorageAPI:
                     signed = self._api(
                         self._endpoint("upload/part-url"),
                         {"session": session, "part_number": part_number},
+                        retryable=True,
                     )
-                    response = requests.put(
-                        signed["url"],
-                        data=chunk,
-                        headers=signed.get("headers") or {},
-                        timeout=300,
-                    )
-                    if response.status_code < 200 or response.status_code >= 300:
-                        raise RuntimeError(
-                            f"part {part_number} HTTP {response.status_code}: {response.text[:200]}"
-                        )
-                    etag = response.headers.get("ETag")
-                    if not etag:
-                        raise RuntimeError(f"part {part_number} missing ETag")
+                    etag = self._put_upload_part(signed, chunk, part_number)
                     parts.append(
                         {
                             "part_number": part_number,
@@ -258,17 +259,21 @@ class FlowpanStorageAPI:
 
     def get_folder(self, path: Path) -> Optional[FileItem]:
         folder_path = self._normalize_dir_path(Path(path).as_posix())
+        cached = self._get_folder_cache(folder_path)
+        if cached is not None:
+            return cached
         try:
-            data = self._api_endpoint("dir/ensure", {"path": folder_path})
-            return FileItem(
-                storage=self._disk_name,
-                fileid=str(data.get("cid") or 0),
-                path=self._ensure_trailing_slash(data.get("path") or folder_path),
-                name="/" if folder_path == "/" else posixpath.basename(folder_path.rstrip("/")),
-                basename="/" if folder_path == "/" else posixpath.basename(folder_path.rstrip("/")),
-                type="dir",
-            )
+            data = self._api_endpoint("dir/ensure", {"path": folder_path}, retryable=True)
+            item = self._folder_item_from_data(folder_path, data)
+            self._set_folder_cache(folder_path, item)
+            return item
         except Exception as error:
+            if self._is_already_exists_error(error):
+                item = self._get_existing_folder_after_conflict(folder_path)
+                if item is not None:
+                    self._clear_list_cache()
+                    self._set_folder_cache(folder_path, item)
+                    return item
             logger.error(f"【Flowpan存储】创建目录失败 {folder_path}: {error}")
             return None
 
@@ -277,6 +282,7 @@ class FlowpanStorageAPI:
             data = self._api(
                 self._endpoint("item"),
                 {"path": Path(path).as_posix(), "storage": self._disk_name},
+                retryable=True,
             )
             return self._file_item_from_data(data)
         except Exception:
@@ -307,6 +313,7 @@ class FlowpanStorageAPI:
             data = self._api(
                 self._endpoint("dir/list"),
                 payload,
+                retryable=True,
             )
             items = [
                 item
@@ -334,7 +341,7 @@ class FlowpanStorageAPI:
             "limit": max(1, min(int(limit or 100), 200)),
             "storage": self._disk_name,
         }
-        data = self._api_endpoint("search", payload)
+        data = self._api_endpoint("search", payload, retryable=True)
         items = [
             item
             for item in (self._file_item_from_data(raw) for raw in data.get("items") or [])
@@ -379,7 +386,7 @@ class FlowpanStorageAPI:
             return False
         try:
             self._api_endpoint("delete", {"ids": file_ids})
-            self._clear_list_cache()
+            self._clear_all_cache()
             return True
         except Exception as error:
             logger.error(f"【Flowpan存储】删除失败 ids={file_ids}: {error}")
@@ -392,7 +399,7 @@ class FlowpanStorageAPI:
             return False
         try:
             self._api_endpoint("rename", {"id": file_id, "name": name})
-            self._clear_list_cache()
+            self._clear_all_cache()
             return True
         except Exception as error:
             logger.error(f"【Flowpan存储】重命名失败 {getattr(fileitem, 'path', '')}: {error}")
@@ -428,6 +435,7 @@ class FlowpanStorageAPI:
         return self._api_endpoint(
             "recycle/preview",
             {"days": int(days or 0), "account": str(account or "").strip()},
+            retryable=True,
         )
 
     def recycle_clean(
@@ -453,7 +461,7 @@ class FlowpanStorageAPI:
         return self._api_endpoint("recycle/revert", payload)
 
     def video_history(self, pickcode: str) -> Dict[str, Any]:
-        return self._api_endpoint("video/history", {"pickcode": str(pickcode or "").strip()})
+        return self._api_endpoint("video/history", {"pickcode": str(pickcode or "").strip()}, retryable=True)
 
     def video_save_history(
         self,
@@ -481,7 +489,7 @@ class FlowpanStorageAPI:
         """
         探测 Flowpan / 115 存储桥连通性与鉴权状态。
         """
-        data = self._api_endpoint("usage", {})
+        data = self._api_endpoint("usage", {}, retryable=True)
         data["backend"] = self._storage_backend
         return data
 
@@ -492,6 +500,7 @@ class FlowpanStorageAPI:
         now = time.time()
         with self._list_cache_lock:
             entries: List[Dict[str, Any]] = []
+            folder_entries: List[Dict[str, Any]] = []
             expired_keys: List[str] = []
             for key, cached in self._list_cache.items():
                 cached_at, items = cached
@@ -511,25 +520,50 @@ class FlowpanStorageAPI:
                         "item_count": len(items),
                     }
                 )
+            for key, cached in self._folder_cache.items():
+                cached_at, item = cached
+                age_seconds = max(0.0, now - cached_at)
+                if self._list_cache_ttl <= 0:
+                    expired_keys.append(key)
+                    continue
+                if age_seconds >= self._list_cache_ttl:
+                    expired_keys.append(key)
+                    continue
+                folder_entries.append(
+                    {
+                        "key": key,
+                        "cached_at": int(cached_at),
+                        "age_seconds": int(age_seconds),
+                        "remaining_seconds": int(max(self._list_cache_ttl - age_seconds, 0)),
+                        "path": getattr(item, "path", ""),
+                        "fileid": getattr(item, "fileid", ""),
+                    }
+                )
             for key in expired_keys:
                 self._list_cache.pop(key, None)
+                self._folder_cache.pop(key, None)
             entries.sort(key=lambda item: item["cached_at"], reverse=True)
-            latest_cached_at = entries[0]["cached_at"] if entries else 0
-            oldest_cached_at = entries[-1]["cached_at"] if entries else 0
+            folder_entries.sort(key=lambda item: item["cached_at"], reverse=True)
+            all_cached_at = [int(item["cached_at"]) for item in entries + folder_entries]
+            latest_cached_at = max(all_cached_at) if all_cached_at else 0
+            oldest_cached_at = min(all_cached_at) if all_cached_at else 0
             return {
                 "enabled": self._list_cache_ttl > 0,
                 "ttl_seconds": self._list_cache_ttl,
-                "entry_count": len(entries),
+                "entry_count": len(entries) + len(folder_entries),
+                "list_entry_count": len(entries),
+                "folder_entry_count": len(folder_entries),
                 "latest_cached_at": latest_cached_at,
                 "oldest_cached_at": oldest_cached_at,
                 "entries": entries,
+                "folder_entries": folder_entries,
             }
 
     def clear_list_cache(self) -> None:
         """
         清空目录缓存。
         """
-        self._clear_list_cache()
+        self._clear_all_cache()
 
     def upload_state_stats(self) -> Dict[str, Any]:
         """
@@ -590,16 +624,18 @@ class FlowpanStorageAPI:
         if not target_name:
             return False
         try:
-            folder = self._api_endpoint("dir/ensure", {"path": target_dir_path})
-            target_cid = int(folder.get("cid") or 0)
+            target_cid = self._target_cid_for_path(target_dir_path)
+            if target_cid is None:
+                return False
             endpoint = "copy" if action == "copy" else "move"
             if action == "move" and self._storage_backend != "open":
                 self._api(
                     self._endpoint("move/check-conflict"),
                     {"ids": [file_id], "parent_id": target_cid},
+                    retryable=True,
                 )
             self._api_endpoint(endpoint, {"ids": [file_id], "parent_id": target_cid})
-            self._clear_list_cache()
+            self._clear_all_cache()
             current_name = (getattr(fileitem, "name", "") or Path(getattr(fileitem, "path", "")).name).strip()
             requested_name = (new_name or "").strip()
             if requested_name and requested_name != current_name:
@@ -625,16 +661,18 @@ class FlowpanStorageAPI:
             return False
         target_dir_path = self._normalize_dir_path(Path(target_dir).as_posix())
         try:
-            folder = self._api_endpoint("dir/ensure", {"path": target_dir_path})
-            target_cid = int(folder.get("cid") or 0)
+            target_cid = self._target_cid_for_path(target_dir_path)
+            if target_cid is None:
+                return False
             endpoint = "copy" if action == "copy" else "move"
             if action == "move" and self._storage_backend != "open":
                 self._api(
                     self._endpoint("move/check-conflict"),
                     {"ids": file_ids, "parent_id": target_cid},
+                    retryable=True,
                 )
             self._api_endpoint(endpoint, {"ids": file_ids, "parent_id": target_cid})
-            self._clear_list_cache()
+            self._clear_all_cache()
             return True
         except Exception as error:
             logger.error(f"【Flowpan存储】{self.transtype.get(action, action)}批量失败 ids={file_ids}: {error}")
@@ -647,6 +685,10 @@ class FlowpanStorageAPI:
             return f"{prefix}:cid:{file_id}"
         path = self._normalize_dir_path(getattr(fileitem, "path", "/") or "/")
         return f"{prefix}:path:{path}"
+
+    def _folder_cache_key(self, folder_path: str) -> str:
+        prefix = f"{self._storage_backend}:{self._disk_name}"
+        return f"{prefix}:folder:{self._normalize_dir_path(folder_path)}"
 
     def _get_list_cache(self, key: str) -> Optional[List[FileItem]]:
         if self._list_cache_ttl <= 0:
@@ -668,9 +710,39 @@ class FlowpanStorageAPI:
         with self._list_cache_lock:
             self._list_cache[key] = (time.time(), list(items))
 
+    def _get_folder_cache(self, folder_path: str) -> Optional[FileItem]:
+        if self._list_cache_ttl <= 0:
+            return None
+        key = self._folder_cache_key(folder_path)
+        now = time.time()
+        with self._list_cache_lock:
+            cached = self._folder_cache.get(key)
+            if not cached:
+                return None
+            cached_at, item = cached
+            if now - cached_at < self._list_cache_ttl:
+                return item
+            self._folder_cache.pop(key, None)
+        return None
+
+    def _set_folder_cache(self, folder_path: str, item: FileItem) -> None:
+        if self._list_cache_ttl <= 0 or item is None:
+            return
+        with self._list_cache_lock:
+            self._folder_cache[self._folder_cache_key(folder_path)] = (time.time(), item)
+
     def _clear_list_cache(self) -> None:
         with self._list_cache_lock:
             self._list_cache.clear()
+
+    def _clear_folder_cache(self) -> None:
+        with self._list_cache_lock:
+            self._folder_cache.clear()
+
+    def _clear_all_cache(self) -> None:
+        with self._list_cache_lock:
+            self._list_cache.clear()
+            self._folder_cache.clear()
 
     def _upload_init(
         self,
@@ -695,37 +767,181 @@ class FlowpanStorageAPI:
             payload["sign_val"] = sign_val
         return self._api_endpoint("upload/init", payload)
 
-    def _api(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _api(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        retryable: bool = False,
+    ) -> Dict[str, Any]:
         url = self._flowpan_url + path
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
         }
-        response = requests.post(url, json=payload, headers=headers, timeout=60)
-        try:
-            data = response.json()
-        except Exception:
-            raise RuntimeError(f"Flowpan HTTP {response.status_code}: {response.text[:200]}")
-        if response.status_code != 200 or data.get("code") != 200:
-            raise RuntimeError(data.get("msg") or f"Flowpan HTTP {response.status_code}")
-        return data.get("data") or {}
+        delays = FLOWPAN_API_RETRY_DELAYS if retryable else (0.0,)
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate(delays, start=1):
+            if delay > 0:
+                time.sleep(delay)
+            response = None
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=60)
+                status_code = int(response.status_code or 0)
+                response_text = response.text[:200]
+                try:
+                    data = response.json()
+                except Exception:
+                    if self._should_retry_status(status_code) and attempt < len(delays):
+                        self._log_retry("api", path, attempt, f"HTTP {status_code}")
+                        continue
+                    raise RuntimeError(f"Flowpan HTTP {status_code}: {response_text}")
+                api_code = self._int_value(data.get("code"))
+                if status_code == 200 and api_code == 200:
+                    return data.get("data") or {}
+                message = data.get("msg") or f"Flowpan HTTP {status_code}"
+                if self._should_retry_status(status_code) or self._should_retry_status(api_code):
+                    if attempt < len(delays):
+                        self._log_retry("api", path, attempt, str(message))
+                        continue
+                raise RuntimeError(message)
+            except FLOWPAN_RETRY_EXCEPTIONS as error:
+                last_error = error
+                if attempt < len(delays):
+                    self._log_retry("api", path, attempt, str(error))
+                    continue
+                raise
+            finally:
+                if response is not None:
+                    response.close()
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Flowpan request failed")
 
-    def _api_endpoint(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self._api(self._endpoint(endpoint), payload)
+    def _api_endpoint(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        retryable: bool = False,
+    ) -> Dict[str, Any]:
+        return self._api(self._endpoint(endpoint), payload, retryable=retryable)
+
+    def _put_upload_part(self, signed: Dict[str, Any], chunk: bytes, part_number: int) -> str:
+        url = str(signed.get("url") or "")
+        if not url:
+            raise RuntimeError(f"part {part_number} missing upload url")
+        headers = signed.get("headers") or {}
+        last_error: Optional[Exception] = None
+        for attempt, delay in enumerate(FLOWPAN_PART_RETRY_DELAYS, start=1):
+            if delay > 0:
+                time.sleep(delay)
+            response = None
+            try:
+                response = requests.put(url, data=chunk, headers=headers, timeout=300)
+                status_code = int(response.status_code or 0)
+                if 200 <= status_code < 300:
+                    etag = response.headers.get("ETag")
+                    if not etag:
+                        raise RuntimeError(f"part {part_number} missing ETag")
+                    return etag
+                response_text = response.text[:200]
+                if self._should_retry_status(status_code) and attempt < len(FLOWPAN_PART_RETRY_DELAYS):
+                    self._log_retry("part", str(part_number), attempt, f"HTTP {status_code}")
+                    continue
+                raise RuntimeError(f"part {part_number} HTTP {status_code}: {response_text}")
+            except FLOWPAN_RETRY_EXCEPTIONS as error:
+                last_error = error
+                if attempt < len(FLOWPAN_PART_RETRY_DELAYS):
+                    self._log_retry("part", str(part_number), attempt, str(error))
+                    continue
+                raise
+            finally:
+                if response is not None:
+                    response.close()
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"part {part_number} upload failed")
+
+    @staticmethod
+    def _should_retry_status(status_code: int) -> bool:
+        return int(status_code or 0) in FLOWPAN_RETRY_STATUS_CODES
+
+    @staticmethod
+    def _int_value(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _log_retry(kind: str, target: str, attempt: int, reason: str) -> None:
+        logger.warning(
+            "【Flowpan存储】%s retry attempt=%d target=%s reason=%s",
+            kind,
+            attempt + 1,
+            target,
+            reason,
+        )
+
+    def _get_existing_folder_after_conflict(self, folder_path: str) -> Optional[FileItem]:
+        for delay in FLOWPAN_EXISTS_FALLBACK_DELAYS:
+            if delay > 0:
+                time.sleep(delay)
+            item = self.get_item(Path(folder_path))
+            if item is not None and getattr(item, "type", "") == "dir":
+                return item
+        return None
+
+    def _folder_item_from_data(self, folder_path: str, data: Dict[str, Any]) -> FileItem:
+        return FileItem(
+            storage=self._disk_name,
+            fileid=str(data.get("cid") or data.get("id") or data.get("file_id") or 0),
+            path=self._ensure_trailing_slash(data.get("path") or folder_path),
+            name="/" if folder_path == "/" else posixpath.basename(folder_path.rstrip("/")),
+            basename="/" if folder_path == "/" else posixpath.basename(folder_path.rstrip("/")),
+            type="dir",
+        )
+
+    @staticmethod
+    def _is_already_exists_error(error: Exception) -> bool:
+        text = str(error or "").lower()
+        return "20004" in text or "already exists" in text or "已存在" in text
 
     def _endpoint(self, endpoint: str) -> str:
         return self._api_prefix + "/" + str(endpoint or "").lstrip("/")
 
     def _target_cid(self, target_dir: FileItem, target_dir_path: str) -> Optional[int]:
+        target_dir_path = self._normalize_dir_path(target_dir_path)
         try:
             if getattr(target_dir, "fileid", None) not in (None, ""):
-                return int(target_dir.fileid)
+                parsed = int(target_dir.fileid)
+                if parsed > 0 or target_dir_path == "/":
+                    return parsed
         except Exception:
             pass
+        return self._target_cid_for_path(target_dir_path)
+
+    def _target_cid_for_path(self, target_dir_path: str) -> Optional[int]:
+        target_dir_path = self._normalize_dir_path(target_dir_path)
+        if target_dir_path == "/":
+            return 0
+        cached = self._get_folder_cache(target_dir_path)
+        if cached is not None:
+            file_id = self._file_id(cached)
+            if file_id:
+                return file_id
         try:
-            data = self._api_endpoint("dir/ensure", {"path": target_dir_path})
-            return int(data.get("cid") or 0)
+            data = self._api_endpoint("dir/ensure", {"path": target_dir_path}, retryable=True)
+            item = self._folder_item_from_data(target_dir_path, data)
+            self._set_folder_cache(target_dir_path, item)
+            return int(data.get("cid") or data.get("id") or data.get("file_id") or 0)
         except Exception as error:
+            if self._is_already_exists_error(error):
+                item = self._get_existing_folder_after_conflict(target_dir_path)
+                if item is not None:
+                    self._set_folder_cache(target_dir_path, item)
+                    file_id = self._file_id(item)
+                    if file_id:
+                        return file_id
             logger.error(f"【Flowpan存储】解析目标目录失败 {target_dir_path}: {error}")
             return None
 
