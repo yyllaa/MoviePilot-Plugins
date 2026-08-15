@@ -277,14 +277,30 @@ class FlowpanStorageAPI:
             logger.error(f"【Flowpan存储】创建目录失败 {folder_path}: {error}")
             return None
 
-    def get_item(self, path: Path) -> Optional[FileItem]:
+    def get_item(self, path: Path, fileitem: Optional[FileItem] = None) -> Optional[FileItem]:
+        fallback = fileitem
+        if fallback is None:
+            fallback = FileItem(
+                storage=self._disk_name,
+                path=Path(path).as_posix(),
+                type="file" if Path(path).suffix else None,
+            )
         try:
+            payload: Dict[str, Any] = {"path": Path(path).as_posix(), "storage": self._disk_name}
+            if fileitem is not None:
+                file_id = self._file_id(fileitem)
+                if file_id is not None:
+                    payload["cid"] = file_id
+                item_type = str(getattr(fileitem, "type", "") or "").strip().lower()
+                if item_type:
+                    payload["type"] = item_type
             data = self._api(
                 self._endpoint("item"),
-                {"path": Path(path).as_posix(), "storage": self._disk_name},
+                payload,
                 retryable=True,
             )
-            return self._file_item_from_data(data)
+            item = self._file_item_from_data(data)
+            return self._merge_file_detail(item, self._find_file_detail_from_cache(fallback), fallback)
         except Exception:
             return None
 
@@ -292,7 +308,7 @@ class FlowpanStorageAPI:
         return self.get_item(path)
 
     def detail(self, fileitem: FileItem) -> Optional[FileItem]:
-        return self.get_item(Path(fileitem.path))
+        return self.get_item(Path(fileitem.path), fileitem)
 
     def exists(self, fileitem: FileItem) -> Optional[bool]:
         return self.get_item(Path(fileitem.path)) is not None
