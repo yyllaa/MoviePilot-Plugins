@@ -299,9 +299,11 @@ class FlowpanStorageAPI:
 
     def list(self, fileitem: FileItem) -> List[FileItem]:
         if self._should_return_file_detail(fileitem):
-            item = self.detail(fileitem)
-            if item is None:
-                item = self._find_file_detail_from_parent(fileitem)
+            cached_item = self._find_file_detail_from_cache(fileitem)
+            item = None
+            if self._file_detail_needs_parent(cached_item):
+                item = self.detail(fileitem)
+            item = self._merge_file_detail(item, cached_item, fileitem)
             if item is not None and getattr(item, "type", "") != "dir":
                 return [item]
             if str(getattr(fileitem, "type", "") or "").lower() == "file":
@@ -994,30 +996,83 @@ class FlowpanStorageAPI:
         item_path = str(getattr(fileitem, "path", "") or "")
         return bool(item_path and not item_path.endswith("/") and Path(item_path).suffix)
 
-    def _find_file_detail_from_parent(self, fileitem: FileItem) -> Optional[FileItem]:
+    def _find_file_detail_from_cache(self, fileitem: FileItem) -> Optional[FileItem]:
         item_path = str(getattr(fileitem, "path", "") or "").replace("\\", "/")
         if not item_path or item_path.endswith("/"):
             return None
-        parent_path = self._normalize_dir_path(posixpath.dirname(item_path) or "/")
-        parent = self.get_item(Path(parent_path))
-        if parent is None:
-            parent = FileItem(
-                storage=self._disk_name,
-                path=self._ensure_trailing_slash(parent_path),
-                type="dir",
-            )
         target_name = str(getattr(fileitem, "name", "") or posixpath.basename(item_path))
         target_id = str(getattr(fileitem, "fileid", "") or "")
-        for item in self.list(parent):
-            if getattr(item, "type", "") == "dir":
-                continue
-            if target_id and str(getattr(item, "fileid", "") or "") == target_id:
-                return item
-            if str(getattr(item, "path", "") or "").rstrip("/") == item_path.rstrip("/"):
-                return item
-            if target_name and getattr(item, "name", "") == target_name:
-                return item
+        now = time.time()
+        expired_keys: List[str] = []
+        with self._list_cache_lock:
+            for key, cached in self._list_cache.items():
+                cached_at, items = cached
+                if self._list_cache_ttl <= 0 or now - cached_at >= self._list_cache_ttl:
+                    expired_keys.append(key)
+                    continue
+                for item in items:
+                    if getattr(item, "type", "") == "dir":
+                        continue
+                    if target_id and str(getattr(item, "fileid", "") or "") == target_id:
+                        return item
+                    if str(getattr(item, "path", "") or "").rstrip("/") == item_path.rstrip("/"):
+                        return item
+                    if target_name and getattr(item, "name", "") == target_name:
+                        return item
+            for key in expired_keys:
+                self._list_cache.pop(key, None)
         return None
+
+    @staticmethod
+    def _file_detail_needs_parent(fileitem: Optional[FileItem]) -> bool:
+        if fileitem is None:
+            return True
+        if getattr(fileitem, "type", "") == "dir":
+            return False
+        return FlowpanStorageAPI._missing_number(getattr(fileitem, "size", None)) or FlowpanStorageAPI._missing_number(
+            getattr(fileitem, "modify_time", None)
+        )
+
+    @staticmethod
+    def _missing_number(value: Any) -> bool:
+        try:
+            return int(value or 0) <= 0
+        except (TypeError, ValueError):
+            return True
+
+    def _merge_file_detail(
+        self,
+        primary: Optional[FileItem],
+        parent: Optional[FileItem],
+        fallback: FileItem,
+    ) -> Optional[FileItem]:
+        item = primary or parent or fallback
+        if item is None:
+            return None
+        sources = [source for source in (parent, primary, fallback) if source is not None and source is not item]
+        for attr in ("fileid", "parent_fileid", "name", "path", "pickcode"):
+            if getattr(item, attr, None):
+                continue
+            for source in sources:
+                value = getattr(source, attr, None)
+                if value:
+                    setattr(item, attr, value)
+                    break
+        if not getattr(item, "basename", None) and getattr(item, "name", None):
+            item.basename = Path(str(item.name)).stem
+        if not getattr(item, "extension", None) and getattr(item, "name", None):
+            item.extension = Path(str(item.name)).suffix[1:] or None
+        if not getattr(item, "type", None):
+            item.type = "file"
+        for attr in ("size", "modify_time"):
+            if not self._missing_number(getattr(item, attr, None)):
+                continue
+            for source in sources:
+                value = getattr(source, attr, None)
+                if not self._missing_number(value):
+                    setattr(item, attr, value)
+                    break
+        return item
 
     @staticmethod
     def _normalize_dir_path(value: str) -> str:
