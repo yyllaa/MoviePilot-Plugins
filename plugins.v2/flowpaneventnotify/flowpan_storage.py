@@ -300,6 +300,8 @@ class FlowpanStorageAPI:
     def list(self, fileitem: FileItem) -> List[FileItem]:
         if self._should_return_file_detail(fileitem):
             item = self.detail(fileitem)
+            if item is None:
+                item = self._find_file_detail_from_parent(fileitem)
             if item is not None and getattr(item, "type", "") != "dir":
                 return [item]
             if str(getattr(fileitem, "type", "") or "").lower() == "file":
@@ -992,6 +994,31 @@ class FlowpanStorageAPI:
         item_path = str(getattr(fileitem, "path", "") or "")
         return bool(item_path and not item_path.endswith("/") and Path(item_path).suffix)
 
+    def _find_file_detail_from_parent(self, fileitem: FileItem) -> Optional[FileItem]:
+        item_path = str(getattr(fileitem, "path", "") or "").replace("\\", "/")
+        if not item_path or item_path.endswith("/"):
+            return None
+        parent_path = self._normalize_dir_path(posixpath.dirname(item_path) or "/")
+        parent = self.get_item(Path(parent_path))
+        if parent is None:
+            parent = FileItem(
+                storage=self._disk_name,
+                path=self._ensure_trailing_slash(parent_path),
+                type="dir",
+            )
+        target_name = str(getattr(fileitem, "name", "") or posixpath.basename(item_path))
+        target_id = str(getattr(fileitem, "fileid", "") or "")
+        for item in self.list(parent):
+            if getattr(item, "type", "") == "dir":
+                continue
+            if target_id and str(getattr(item, "fileid", "") or "") == target_id:
+                return item
+            if str(getattr(item, "path", "") or "").rstrip("/") == item_path.rstrip("/"):
+                return item
+            if target_name and getattr(item, "name", "") == target_name:
+                return item
+        return None
+
     @staticmethod
     def _normalize_dir_path(value: str) -> str:
         value = str(value or "/").replace("\\", "/").strip()
@@ -1106,6 +1133,13 @@ class FlowpanStorageAPI:
             type=item_type,
             path=item_path,
             size=data.get("size") if item_type == "file" else None,
+            modify_time=self._int_value(
+                data.get("modify_time")
+                or data.get("update_time")
+                or data.get("utime")
+                or data.get("mtime")
+                or data.get("time")
+            ),
             pickcode=data.get("pickcode") or None,
         )
 
