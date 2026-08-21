@@ -47,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.31"
+    plugin_version = "1.1.33"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -76,6 +76,7 @@ class FlowpanEventNotify(_PluginBase):
         self._batch_started_at = 0.0
         self._event_count = 0
         self._upload_notify_cache: Dict[str, float] = {}
+        self._last_connection_test: Optional[Dict[str, Any]] = None
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -122,6 +123,8 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_part_size_mb = storage_part_size_mb
         self._storage_cache_ttl_seconds = storage_cache_ttl_seconds
         self._storage_api = None
+        with self._lock:
+            self._last_connection_test = None
         if self._storage_bridge_enabled and self._storage_name:
             target_storages.add(self._storage_name.casefold())
         elif self._storage_name:
@@ -221,8 +224,9 @@ class FlowpanEventNotify(_PluginBase):
         :return List: 插件页面列表
         """
         cache = self._build_cache_summary()
+        with self._lock:
+            connection_test = dict(self._last_connection_test) if self._last_connection_test else None
         upload_state = self._build_upload_state_summary()
-        cache_entries = cache.get("entries") or []
         upload_entries = upload_state.get("entries") or []
         backend_text = "OpenAPI" if self._storage_backend == "open" else "Cookie"
         cache_color = "success" if cache.get("enabled_text") == "启用" else "warning"
@@ -313,6 +317,22 @@ class FlowpanEventNotify(_PluginBase):
                                     },
                                 ],
                             },
+                            *(
+                                [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": connection_test["tone"],
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "class": "mb-3",
+                                        },
+                                        "text": connection_test["text"],
+                                    }
+                                ]
+                                if connection_test
+                                else []
+                            ),
                             {
                                 "component": "div",
                                 "props": {"class": "d-flex flex-wrap ga-2 mb-4"},
@@ -364,71 +384,6 @@ class FlowpanEventNotify(_PluginBase):
                                     },
                                 ],
                             },
-                            *(
-                                [
-                                    {
-                                        "component": "VDivider",
-                                        "props": {"class": "my-3"},
-                                    },
-                                    {
-                                        "component": "div",
-                                        "props": {"class": "d-flex align-center justify-space-between mb-2"},
-                                        "content": [
-                                            {
-                                                "component": "div",
-                                                "props": {"class": "text-subtitle-2"},
-                                                "text": "缓存目录明细",
-                                            },
-                                            {
-                                                "component": "VChip",
-                                                "props": {
-                                                    "size": "x-small",
-                                                    "variant": "tonal",
-                                                    "color": "secondary",
-                                                },
-                                                "text": "最多 10 条",
-                                            },
-                                        ],
-                                    },
-                                ]
-                                if cache_entries
-                                else []
-                            ),
-                            *[
-                                {
-                                    "component": "div",
-                                    "props": {"class": "rounded border pa-3 mb-2"},
-                                    "content": [
-                                        {
-                                            "component": "div",
-                                            "props": {"class": "text-body-2 font-weight-medium text-truncate mb-2"},
-                                            "text": entry["path"],
-                                        },
-                                        {
-                                            "component": "div",
-                                            "props": {"class": "d-flex flex-wrap ga-2"},
-                                            "content": [
-                                                {
-                                                    "component": "VChip",
-                                                    "props": {"size": "x-small", "variant": "tonal"},
-                                                    "text": f"{entry['item_count']} 项",
-                                                },
-                                                {
-                                                    "component": "VChip",
-                                                    "props": {"size": "x-small", "variant": "tonal"},
-                                                    "text": f"已缓存 {entry['age_text']}",
-                                                },
-                                                {
-                                                    "component": "VChip",
-                                                    "props": {"size": "x-small", "variant": "tonal"},
-                                                    "text": f"剩余 {entry['remaining_text']}",
-                                                },
-                                            ],
-                                        },
-                                    ],
-                                }
-                                for entry in cache_entries[:10]
-                            ],
                             {
                                 "component": "VDivider",
                                 "props": {"class": "my-4"},
@@ -892,6 +847,12 @@ class FlowpanEventNotify(_PluginBase):
                 cache_count,
                 cache_ttl,
             )
+            tested_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            with self._lock:
+                self._last_connection_test = {
+                    "tone": "success",
+                    "text": f"最近连接测试成功：连接延时 {latency_ms} ms，测试时间 {tested_at}",
+                }
             return {
                 "code": 0,
                 "msg": (
@@ -901,15 +862,19 @@ class FlowpanEventNotify(_PluginBase):
                 "data": {
                     "backend": self._storage_backend,
                     "latency_ms": latency_ms,
+                    "tested_at": tested_at,
                     "usage": usage,
                     "cache": cache,
                 },
             }
         except Exception as error:
             logger.error(f"【Flowpan事件通知】连接测试失败: {error}", exc_info=True)
+            message = f"连接测试失败：{error}"
+            with self._lock:
+                self._last_connection_test = {"tone": "error", "text": message}
             return {
                 "code": 1,
-                "msg": f"连接测试失败: {error}",
+                "msg": message,
             }
 
     def clear_upload_states(self) -> Dict[str, Any]:
@@ -1129,7 +1094,6 @@ class FlowpanEventNotify(_PluginBase):
                 "latest_text": "无",
                 "oldest_text": "无",
                 "time_summary": f"设置 TTL：{self._storage_cache_ttl_seconds} 秒",
-                "entries": [],
             }
         stats = self._storage_api.list_cache_stats()
         ttl_seconds = int(stats.get("ttl_seconds") or self._storage_cache_ttl_seconds)
@@ -1137,20 +1101,6 @@ class FlowpanEventNotify(_PluginBase):
         latest_cached_at = int(stats.get("latest_cached_at") or 0)
         oldest_cached_at = int(stats.get("oldest_cached_at") or 0)
         enabled = bool(stats.get("enabled"))
-        entries: List[Dict[str, Any]] = []
-        for item in stats.get("entries") or []:
-            cached_at = int(item.get("cached_at") or 0)
-            age_seconds = int(item.get("age_seconds") or 0)
-            remaining_seconds = int(item.get("remaining_seconds") or 0)
-            entries.append(
-                {
-                    "path": self._cache_entry_path(item.get("key") or ""),
-                    "item_count": int(item.get("item_count") or 0),
-                    "age_text": self._seconds_text(age_seconds),
-                    "remaining_text": self._seconds_text(remaining_seconds),
-                    "cached_at": cached_at,
-                }
-            )
         return {
             "tone": "success" if enabled else "warning",
             "summary": (
@@ -1163,7 +1113,6 @@ class FlowpanEventNotify(_PluginBase):
             "latest_text": self._format_ts(latest_cached_at),
             "oldest_text": self._format_ts(oldest_cached_at),
             "time_summary": f"设置 TTL：{ttl_seconds} 秒",
-            "entries": entries,
         }
 
     def _build_upload_state_summary(self) -> Dict[str, Any]:
@@ -1221,29 +1170,6 @@ class FlowpanEventNotify(_PluginBase):
             return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
         except Exception:
             return str(timestamp)
-
-    @staticmethod
-    def _seconds_text(value: int) -> str:
-        seconds = max(0, int(value or 0))
-        if seconds < 60:
-            return f"{seconds} 秒"
-        minutes, sec = divmod(seconds, 60)
-        if minutes < 60:
-            return f"{minutes} 分 {sec} 秒"
-        hours, minutes = divmod(minutes, 60)
-        return f"{hours} 小时 {minutes} 分"
-
-    @staticmethod
-    def _cache_entry_path(cache_key: str) -> str:
-        if not cache_key:
-            return "/"
-        if ":cid:" in cache_key:
-            return f"[CID] {cache_key.rsplit(':cid:', 1)[-1]}"
-        if ":path:" in cache_key:
-            return cache_key.split(":path:", 1)[-1]
-        if ":" in cache_key:
-            return cache_key.split(":", 1)[-1]
-        return cache_key
 
     @staticmethod
     def _format_size_text(raw: Any) -> str:
