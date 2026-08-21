@@ -3,11 +3,12 @@
     "name": "Flowpan事件通知",
     "description": "聚合115转移完成事件并通知Flowpan更新，支持Cookie/OpenAPI链路选择",
     "labels": "STRM",
-    "version": "1.1.30",
+    "version": "1.1.31",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "history": {
+      "v1.1.31": "连接测试展示实际延时，移除待测试存储桥状态和无效配置提示",
       "v1.1.30": "文件详情请求携带文件ID和类型，Flowpan后端优先按ID补齐大小与修改时间，避免大目录点击文件时回扫父目录",
       "v1.1.29": "文件详情缺少大小或修改时间时优先复用目录缓存合并元数据，修复只显示文件名并避免点击大目录文件时重新扫目录",
       "v1.1.28": "补齐 Flowpan 存储桥文件详情的大小和修改时间展示，详情缺失时回查父目录匹配完整文件信息",

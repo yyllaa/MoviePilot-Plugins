@@ -47,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "1.1.30"
+    plugin_version = "1.1.31"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -220,7 +220,6 @@ class FlowpanEventNotify(_PluginBase):
 
         :return List: 插件页面列表
         """
-        connection = self._build_connection_summary()
         cache = self._build_cache_summary()
         upload_state = self._build_upload_state_summary()
         cache_entries = cache.get("entries") or []
@@ -228,7 +227,6 @@ class FlowpanEventNotify(_PluginBase):
         backend_text = "OpenAPI" if self._storage_backend == "open" else "Cookie"
         cache_color = "success" if cache.get("enabled_text") == "启用" else "warning"
         metric_chips = [
-            ("mdi-lan-connect", "存储桥", connection["bridge"], connection["tone"]),
             ("mdi-source-branch", "链路", backend_text, "primary"),
             ("mdi-folder-clock-outline", "当前链路缓存", cache["enabled_text"], cache_color),
             ("mdi-timer-outline", "TTL", f"{cache['ttl_seconds']} 秒", "secondary"),
@@ -299,23 +297,7 @@ class FlowpanEventNotify(_PluginBase):
                                 "content": [
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 6},
-                                        "content": [
-                                            {
-                                                "component": "VAlert",
-                                                "props": {
-                                                    "type": connection["tone"],
-                                                    "variant": "tonal",
-                                                    "density": "compact",
-                                                    "class": "h-100",
-                                                },
-                                                "text": connection["text"],
-                                            }
-                                        ],
-                                    },
-                                    {
-                                        "component": "VCol",
-                                        "props": {"cols": 12, "md": 6},
+                                        "props": {"cols": 12},
                                         "content": [
                                             {
                                                 "component": "VAlert",
@@ -895,7 +877,9 @@ class FlowpanEventNotify(_PluginBase):
                     "code": 1,
                     "msg": "存储桥未初始化，请检查地址和密钥",
                 }
+            started_at = monotonic()
             usage = self._storage_api.probe_connection()
+            latency_ms = max(1, round((monotonic() - started_at) * 1000))
             cache = self._storage_api.list_cache_stats()
             total = self._format_size_text(usage.get("total"))
             available = self._format_size_text(usage.get("available"))
@@ -903,18 +887,20 @@ class FlowpanEventNotify(_PluginBase):
             cache_count = int(cache.get("entry_count") or 0)
             cache_ttl = int(cache.get("ttl_seconds") or 0)
             logger.info(
-                "【Flowpan事件通知】连接测试成功，缓存条数=%d，TTL=%d 秒",
+                "【Flowpan事件通知】连接测试成功，延时=%d ms，缓存条数=%d，TTL=%d 秒",
+                latency_ms,
                 cache_count,
                 cache_ttl,
             )
             return {
                 "code": 0,
                 "msg": (
-                    f"连接测试成功：链路 {self._storage_backend}，容量 {total}，可用 {available}；"
+                    f"连接测试成功：连接延时 {latency_ms} ms，链路 {self._storage_backend}，容量 {total}，可用 {available}；"
                     f"目录缓存{cache_state}，TTL {cache_ttl} 秒，当前 {cache_count} 条"
                 ),
                 "data": {
                     "backend": self._storage_backend,
+                    "latency_ms": latency_ms,
                     "usage": usage,
                     "cache": cache,
                 },
@@ -1131,31 +1117,6 @@ class FlowpanEventNotify(_PluginBase):
             category=category,
             share_id=share_id,
         )
-
-    def _build_connection_summary(self) -> Dict[str, str]:
-        if not self._storage_bridge_enabled:
-            return {
-                "tone": "warning",
-                "text": "存储桥未启用，无法进行连接测试。",
-                "bridge": "关闭",
-            }
-        if not self._storage_api:
-            return {
-                "tone": "warning",
-                "text": "存储桥已启用，但尚未完成初始化，请检查地址、密钥和存储名称。",
-                "bridge": "未初始化",
-            }
-        if not self._flowpan_url or not self._token:
-            return {
-                "tone": "warning",
-                "text": "Flowpan 地址或事件密钥未配置完整。",
-                "bridge": "配置不完整",
-            }
-        return {
-            "tone": "info",
-            "text": "Flowpan 存储桥已配置，点击连接测试验证连通性。",
-            "bridge": "待测试",
-        }
 
     def _build_cache_summary(self) -> Dict[str, Any]:
         if not self._storage_api:
