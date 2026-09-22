@@ -8,7 +8,7 @@ from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
 from app.sdk.services import StorageHelper
 from app.sdk.plugin import _PluginBase
-from app.schemas import FileItem, StorageOperSelectionEventData
+from app.schemas import FileItem, StorageOperSelectionEventData, StorageUsage
 from app.schemas.types import ChainEventType, EventType
 from app.sdk.network import RequestUtils
 
@@ -47,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "3.0.0"
+    plugin_version = "3.0.1"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -541,6 +541,7 @@ class FlowpanEventNotify(_PluginBase):
         if not self._storage_api:
             return {}
         return {
+            "storage_manage": self.storage_manage,
             "list_files": self.list_files,
             "search_files": self.search_files,
             "any_files": self.any_files,
@@ -1023,6 +1024,31 @@ class FlowpanEventNotify(_PluginBase):
         if not self._storage_item(fileitem):
             return None
         return self._storage_api.exists(fileitem)
+
+    def storage_manage(self, storage: str, action: str, **params) -> Optional[Dict[str, Any]]:
+        """接入 V3 统一存储管理契约；其他存储留给宿主处理。"""
+        if storage != self._storage_name:
+            return None
+        if not self._storage_api:
+            return {"success": False, "message": "Flowpan 存储桥未启用或初始化失败"}
+        if action == "support_transtype":
+            return {"success": True, "data": {"transtype": self._storage_api.support_transtype()}}
+        if action == "usage":
+            try:
+                # 直接查询以保留错误，避免旧容量接口将连接失败转换成零容量。
+                data = self._storage_api.probe_connection()
+                usage = StorageUsage(
+                    total=float(data.get("total") or 0),
+                    available=float(data.get("available") or 0),
+                )
+                return {"success": True, "data": usage.model_dump()}
+            except Exception as error:
+                logger.warning(f"【Flowpan存储】V3 容量查询失败: {error}")
+                return {"success": False, "message": "Flowpan 容量查询失败，请检查连接配置及插件日志"}
+        return {
+            "success": False,
+            "message": "此操作请在 Flowpan事件通知插件中配置；115 登录请在 Flowpan 中完成",
+        }
 
     def storage_usage(self, storage: str = ""):
         if storage and storage != self._storage_name:

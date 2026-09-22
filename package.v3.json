@@ -3,12 +3,13 @@
     "name": "Flowpan事件通知",
     "description": "聚合115转移完成事件并通知Flowpan更新，支持Cookie/OpenAPI链路选择",
     "labels": "STRM",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
+      "v3.0.1": "补齐 V3 storage_manage 入口，修复 Flowpan-115 容量和整理方式查询提示不支持的存储类型。",
       "v3.0.0": "适配 MoviePilot V3 稳定 SDK，保留 V2 实现不变。"
     }
   }
