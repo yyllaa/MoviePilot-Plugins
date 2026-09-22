@@ -14,8 +14,8 @@ def test_v3_index_and_source_are_aligned():
     package = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))
     source = (PLUGIN / "__init__.py").read_text(encoding="utf-8")
 
-    assert package["FlowpanEventNotify"]["version"] == "3.0.1"
-    assert 'plugin_version = "3.0.1"' in source
+    assert package["FlowpanEventNotify"]["version"] == "3.0.2"
+    assert 'plugin_version = "3.0.2"' in source
     assert package["FlowpanEventNotify"]["system_version"] == ">=3.0.0"
 
 
@@ -24,6 +24,14 @@ def test_v3_source_does_not_add_legacy_imports():
     for path in PLUGIN.glob("*.py"):
         text = path.read_text(encoding="utf-8")
         assert not any(line.startswith(legacy_prefixes) for line in text.splitlines()), path
+
+
+def test_v3_runtime_capabilities_are_real():
+    source = (PLUGIN / "__init__.py").read_text(encoding="utf-8-sig")
+    assert '"cmd": "/flowpan_sync"' in source
+    assert '"id": "flowpan_sync"' in source
+    assert "def action_flowpan_sync" in source
+    assert "@eventmanager.register(EventType.PluginAction)" in source
 
 
 def test_v3_storage_management_contract():

@@ -47,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "3.0.1"
+    plugin_version = "3.0.2"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -178,11 +178,30 @@ class FlowpanEventNotify(_PluginBase):
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
         """
-        返回插件命令列表，本插件无远程命令
+        返回手动触发 Flowpan 增量通知的命令。
 
-        :return List: 空命令列表
+        :return List: 插件命令列表
         """
-        return []
+        return [
+            {
+                "cmd": "/flowpan_sync",
+                "event": EventType.PluginAction,
+                "desc": "立即通知 Flowpan 执行增量同步",
+                "category": "Flowpan",
+                "data": {"action": "flowpan_sync"},
+            }
+        ]
+
+    def get_actions(self) -> List[Dict[str, Any]]:
+        """注册可放入工作流的手动增量通知动作。"""
+        return [
+            {
+                "id": "flowpan_sync",
+                "name": "通知 Flowpan 增量同步",
+                "func": self.action_flowpan_sync,
+                "kwargs": {},
+            }
+        ]
 
     def get_api(self) -> List[Dict[str, Any]]:
         """
@@ -911,6 +930,38 @@ class FlowpanEventNotify(_PluginBase):
         event_data: StorageOperSelectionEventData = event.event_data
         if event_data.storage == self._storage_name:
             event_data.storage_oper = self._storage_api  # noqa
+
+    @eventmanager.register(EventType.PluginAction)
+    def plugin_action(self, event: Event) -> None:
+        """处理命令转发的插件动作。"""
+        data = event.event_data if event else None
+        action = data.get("action") if isinstance(data, dict) else getattr(data, "action", None)
+        plugin_id = data.get("plugin_id") if isinstance(data, dict) else getattr(data, "plugin_id", None)
+        if action != "flowpan_sync" or (plugin_id and plugin_id != self.__class__.__name__):
+            return
+        self._trigger_flowpan_sync()
+
+    def action_flowpan_sync(self, context: Any, **_: Any) -> Tuple[bool, Any]:
+        """工作流动作：提交一次立即增量通知，不阻塞工作流等待同步结束。"""
+        return self._trigger_flowpan_sync(), context
+
+    def _trigger_flowpan_sync(self) -> bool:
+        """取消待发送批次并立即提交通知；Flowpan 负责实际增量同步。"""
+        if not self._enabled or not self._flowpan_url or not self._token:
+            logger.warning("【Flowpan事件通知】手动增量通知失败：插件未启用或地址/密钥未配置")
+            return False
+        with self._lock:
+            event_count = max(1, self._event_count)
+            self._event_count = 0
+            self._batch_started_at = 0.0
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+        logger.info("【Flowpan事件通知】手动触发增量通知，事件数=%d", event_count)
+        worker = Thread(target=self._notify_flowpan, args=(event_count,))
+        worker.daemon = True
+        worker.start()
+        return True
 
     def list_files(self, fileitem: FileItem, recursion: bool = False):
         if not self._storage_item(fileitem):
