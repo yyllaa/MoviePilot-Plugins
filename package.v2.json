@@ -7,6 +7,7 @@
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/main/public/plugin.png",
     "author": "yyllaa",
     "level": 1,
+    "v3": false,
     "history": {
       "v1.1.33": "精简连接测试页面，移除占用过高的逐条缓存目录明细",
       "v1.1.32": "连接测试后在插件页面直接显示连接延时和测试时间，不再只记录日志",
