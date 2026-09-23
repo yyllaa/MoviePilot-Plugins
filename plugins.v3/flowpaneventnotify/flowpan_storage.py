@@ -806,6 +806,7 @@ class FlowpanStorageAPI:
         }
         delays = FLOWPAN_API_RETRY_DELAYS if retryable else (0.0,)
         last_error: Optional[Exception] = None
+        cache_invalidated = False
         for attempt, delay in enumerate(delays, start=1):
             if delay > 0:
                 time.sleep(delay)
@@ -825,6 +826,14 @@ class FlowpanStorageAPI:
                 if status_code == 200 and api_code == 200:
                     return data.get("data") or {}
                 message = data.get("msg") or f"Flowpan HTTP {status_code}"
+                if not cache_invalidated and self._should_clear_cache(status_code, api_code, str(message)):
+                    self._clear_all_cache()
+                    cache_invalidated = True
+                    logger.warning(
+                        "【Flowpan存储】链路异常，已清理目录缓存 backend=%s reason=%s",
+                        self._storage_backend,
+                        message,
+                    )
                 if self._should_retry_status(status_code) or self._should_retry_status(api_code):
                     if attempt < len(delays):
                         self._log_retry("api", path, attempt, str(message))
@@ -832,6 +841,14 @@ class FlowpanStorageAPI:
                 raise RuntimeError(message)
             except FLOWPAN_RETRY_EXCEPTIONS as error:
                 last_error = error
+                if not cache_invalidated and self._should_clear_cache(0, 0, str(error)):
+                    self._clear_all_cache()
+                    cache_invalidated = True
+                    logger.warning(
+                        "【Flowpan存储】请求上下文异常，已清理目录缓存 backend=%s reason=%s",
+                        self._storage_backend,
+                        error,
+                    )
                 if attempt < len(delays):
                     self._log_retry("api", path, attempt, str(error))
                     continue
@@ -890,6 +907,15 @@ class FlowpanStorageAPI:
     @staticmethod
     def _should_retry_status(status_code: int) -> bool:
         return int(status_code or 0) in FLOWPAN_RETRY_STATUS_CODES
+
+    @staticmethod
+    def _should_clear_cache(status_code: int, api_code: int, message: str) -> bool:
+        if int(status_code or 0) in {401, 403}:
+            return True
+        if int(api_code or 0) in {40140117, 40140137}:
+            return True
+        text = str(message or "").lower()
+        return "context canceled" in text or "refresh_token" in text
 
     @staticmethod
     def _int_value(value: Any) -> int:

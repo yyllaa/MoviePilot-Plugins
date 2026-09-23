@@ -15,8 +15,8 @@ def test_v3_index_and_source_are_aligned():
     package = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))
     source = (PLUGIN / "__init__.py").read_text(encoding="utf-8")
 
-    assert package["FlowpanEventNotify"]["version"] == "3.0.3"
-    assert 'plugin_version = "3.0.3"' in source
+    assert package["FlowpanEventNotify"]["version"] == "3.0.4"
+    assert 'plugin_version = "3.0.4"' in source
     assert package["FlowpanEventNotify"]["system_version"] == ">=3.0.0"
 
 
@@ -33,6 +33,24 @@ def test_v3_runtime_capabilities_are_real():
     assert '"id": "flowpan_sync"' in source
     assert "def action_flowpan_sync" in source
     assert "@eventmanager.register(EventType.PluginAction)" in source
+    assert "def retry_notification" in source
+    assert "def clear_cache" in source
+
+
+def test_storage_auth_and_context_failures_invalidate_cache():
+    source = ast.parse((PLUGIN / "flowpan_storage.py").read_text(encoding="utf-8"))
+    plugin = next(node for node in source.body if isinstance(node, ast.ClassDef))
+    method = next(node for node in plugin.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "_should_clear_cache")
+    scope = {}
+    exec(compile("from __future__ import annotations\n" + ast.unparse(method), "storage", "exec"), scope)
+    helper = scope["_should_clear_cache"]
+    helper = getattr(helper, "__func__", helper)
+
+    assert helper(200, 40140117, "刷新过于频繁")
+    assert helper(200, 40140137, "refresh_token 已失效")
+    assert helper(0, 0, "context canceled")
+    assert not helper(500, 0, "server temporarily unavailable")
 
 
 def test_notification_triggers_are_serialized_and_pending_events_are_drained():

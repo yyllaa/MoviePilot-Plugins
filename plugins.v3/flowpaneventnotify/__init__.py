@@ -47,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "3.0.3"
+    plugin_version = "3.0.4"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -80,6 +80,7 @@ class FlowpanEventNotify(_PluginBase):
         self._notification_generation = 0
         self._upload_notify_cache: Dict[str, float] = {}
         self._last_connection_test: Optional[Dict[str, Any]] = None
+        self._last_notification: Dict[str, Any] = {}
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -128,6 +129,7 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_api = None
         with self._lock:
             self._last_connection_test = None
+            self._last_notification = {}
         if self._storage_bridge_enabled and self._storage_name:
             target_storages.add(self._storage_name.casefold())
         elif self._storage_name:
@@ -228,7 +230,23 @@ class FlowpanEventNotify(_PluginBase):
                 "methods": ["POST"],
                 "summary": "清理上传断点",
                 "description": "清理当前 Flowpan 链路的上传断点状态",
-            }
+            },
+            {
+                "path": "/retry_notification",
+                "endpoint": self.retry_notification,
+                "auth": "bear",
+                "methods": ["POST"],
+                "summary": "重试增量通知",
+                "description": "重试最近一次失败的 Flowpan 增量通知",
+            },
+            {
+                "path": "/clear_cache",
+                "endpoint": self.clear_cache,
+                "auth": "bear",
+                "methods": ["POST"],
+                "summary": "清理目录缓存",
+                "description": "清理当前 Cookie/OpenAPI 链路的目录缓存",
+            },
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -248,6 +266,7 @@ class FlowpanEventNotify(_PluginBase):
         cache = self._build_cache_summary()
         with self._lock:
             connection_test = dict(self._last_connection_test) if self._last_connection_test else None
+        notification = self._build_notification_summary()
         upload_state = self._build_upload_state_summary()
         upload_entries = upload_state.get("entries") or []
         backend_text = "OpenAPI" if self._storage_backend == "open" else "Cookie"
@@ -257,6 +276,7 @@ class FlowpanEventNotify(_PluginBase):
             ("mdi-folder-clock-outline", "当前链路缓存", cache["enabled_text"], cache_color),
             ("mdi-timer-outline", "TTL", f"{cache['ttl_seconds']} 秒", "secondary"),
             ("mdi-format-list-numbered", "缓存条数", str(cache["entry_count"]), "secondary"),
+            ("mdi-bell-outline", "通知", notification["status_text"], notification["tone"]),
         ]
         cache_time_items = [
             ("最近缓存", cache["latest_text"]),
@@ -297,21 +317,56 @@ class FlowpanEventNotify(_PluginBase):
                                         "props": {"cols": 12, "sm": 5},
                                         "content": [
                                             {
-                                                "component": "VBtn",
-                                                "props": {
-                                                    "color": "primary",
-                                                    "variant": "elevated",
-                                                    "prepend-icon": "mdi-lan-connect",
-                                                    "block": True,
-                                                    "size": "large",
-                                                },
-                                                "text": "连接测试",
-                                                "events": {
-                                                    "click": {
-                                                        "api": "plugin/FlowpanEventNotify/test_connection",
-                                                        "method": "post",
-                                                    }
-                                                },
+                                                "component": "VRow",
+                                                "props": {"dense": True},
+                                                "content": [
+                                                    {
+                                                        "component": "VCol",
+                                                        "props": {"cols": 6},
+                                                        "content": [
+                                                            {
+                                                                "component": "VBtn",
+                                                                "props": {
+                                                                    "color": "primary",
+                                                                    "variant": "elevated",
+                                                                    "prepend-icon": "mdi-lan-connect",
+                                                                    "block": True,
+                                                                    "size": "large",
+                                                                },
+                                                                "text": "连接测试",
+                                                                "events": {
+                                                                    "click": {
+                                                                        "api": "plugin/FlowpanEventNotify/test_connection",
+                                                                        "method": "post",
+                                                                    }
+                                                                },
+                                                            }
+                                                        ],
+                                                    },
+                                                    {
+                                                        "component": "VCol",
+                                                        "props": {"cols": 6},
+                                                        "content": [
+                                                            {
+                                                                "component": "VBtn",
+                                                                "props": {
+                                                                    "color": "warning",
+                                                                    "variant": "tonal",
+                                                                    "prepend-icon": "mdi-broom",
+                                                                    "block": True,
+                                                                    "size": "large",
+                                                                },
+                                                                "text": "清理缓存",
+                                                                "events": {
+                                                                    "click": {
+                                                                        "api": "plugin/FlowpanEventNotify/clear_cache",
+                                                                        "method": "post",
+                                                                    }
+                                                                },
+                                                            }
+                                                        ],
+                                                    },
+                                                ],
                                             }
                                         ],
                                     },
@@ -353,6 +408,38 @@ class FlowpanEventNotify(_PluginBase):
                                     }
                                 ]
                                 if connection_test
+                                else []
+                            ),
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": notification["tone"],
+                                    "variant": "tonal",
+                                    "density": "compact",
+                                    "class": "mb-3",
+                                },
+                                "text": notification["summary"],
+                            },
+                            *(
+                                [
+                                    {
+                                        "component": "VBtn",
+                                        "props": {
+                                            "color": "warning",
+                                            "variant": "tonal",
+                                            "prepend-icon": "mdi-replay",
+                                            "size": "small",
+                                        },
+                                        "text": "重试最近失败通知",
+                                        "events": {
+                                            "click": {
+                                                "api": "plugin/FlowpanEventNotify/retry_notification",
+                                                "method": "post",
+                                            }
+                                        },
+                                    }
+                                ]
+                                if notification["can_retry"]
                                 else []
                             ),
                             {
@@ -923,6 +1010,37 @@ class FlowpanEventNotify(_PluginBase):
                 "msg": f"清理上传断点失败: {error}",
             }
 
+    def retry_notification(self) -> Dict[str, Any]:
+        """重新提交最近一次失败的增量通知。"""
+        with self._lock:
+            last = dict(self._last_notification)
+        event_count = int(last.get("event_count") or 0)
+        if last.get("status") != "error" or event_count <= 0:
+            return {"code": 1, "msg": "当前没有可重试的失败通知"}
+        if self._queue_notification(event_count, "手动重试"):
+            return {
+                "code": 0,
+                "msg": f"已提交通知重试，事件数={event_count}",
+                "data": {"events": event_count},
+            }
+        return {"code": 1, "msg": "通知重试失败：插件未启用或地址/密钥未配置"}
+
+    def clear_cache(self) -> Dict[str, Any]:
+        """清理当前存储链路的目录缓存。"""
+        if not self._storage_api:
+            return {"code": 1, "msg": "存储桥未初始化，无法清理目录缓存"}
+        try:
+            self._storage_api.clear_list_cache()
+            logger.info("【Flowpan事件通知】已手动清理目录缓存，链路=%s", self._storage_backend)
+            return {
+                "code": 0,
+                "msg": f"已清理 {self._storage_backend} 链路目录缓存",
+                "data": {"backend": self._storage_backend},
+            }
+        except Exception as error:
+            logger.error(f"【Flowpan事件通知】清理目录缓存失败: {error}", exc_info=True)
+            return {"code": 1, "msg": f"清理目录缓存失败: {error}"}
+
     @eventmanager.register(ChainEventType.StorageOperSelection)
     def storage_oper_selection(self, event: Event) -> None:
         """
@@ -1239,6 +1357,42 @@ class FlowpanEventNotify(_PluginBase):
             "entries": entries,
         }
 
+    def _build_notification_summary(self) -> Dict[str, Any]:
+        with self._lock:
+            last = dict(self._last_notification)
+            inflight = self._notification_inflight
+            pending = self._pending_notification_count
+            batched = self._event_count
+        if inflight:
+            status_text = "发送中"
+            tone = "info"
+        elif pending:
+            status_text = "排队中"
+            tone = "warning"
+        elif last.get("status") == "error":
+            status_text = "失败"
+            tone = "error"
+        elif last.get("status") == "success":
+            status_text = "正常"
+            tone = "success"
+        else:
+            status_text = "待命"
+            tone = "info"
+        details = []
+        if batched:
+            details.append(f"静默批次 {batched} 个事件")
+        if pending:
+            details.append(f"待发送 {pending} 个事件")
+        if last.get("text"):
+            details.append(str(last["text"]))
+        summary = "；".join(details) or "尚未发送过增量通知"
+        return {
+            "tone": tone,
+            "status_text": status_text,
+            "summary": f"通知状态：{status_text}；{summary}",
+            "can_retry": last.get("status") == "error" and int(last.get("event_count") or 0) > 0,
+        }
+
     @staticmethod
     def _format_ts(timestamp: int) -> str:
         if not timestamp:
@@ -1421,6 +1575,7 @@ class FlowpanEventNotify(_PluginBase):
             "Content-Type": "application/json",
         }
         payload = {"source": "moviepilot", "events": event_count}
+        last_error = ""
         for attempt, delay in enumerate((0, 5, 15), start=1):
             if delay:
                 sleep(delay)
@@ -1432,11 +1587,18 @@ class FlowpanEventNotify(_PluginBase):
                 )
                 status_code = response.status_code if response is not None else 0
                 if status_code in {200, 202}:
+                    self._remember_notification(
+                        "success",
+                        event_count,
+                        attempt,
+                        f"已发送，第 {attempt} 次成功",
+                    )
                     logger.info(
                         "【Flowpan事件通知】已通知 Flowpan，本批共 %d 个完成事件",
                         event_count,
                     )
                     return
+                last_error = f"HTTP {status_code}"
                 logger.warning(
                     "【Flowpan事件通知】第 %d 次通知失败，HTTP %d",
                     attempt,
@@ -1445,6 +1607,7 @@ class FlowpanEventNotify(_PluginBase):
                 if status_code in {400, 401, 403, 404}:
                     break
             except Exception as error:
+                last_error = str(error)
                 logger.warning(
                     "【Flowpan事件通知】第 %d 次通知异常: %s",
                     attempt,
@@ -1457,6 +1620,29 @@ class FlowpanEventNotify(_PluginBase):
             "【Flowpan事件通知】通知失败，本批 %d 个事件将由 Flowpan 定时增量兜底",
             event_count,
         )
+
+        self._remember_notification(
+            "error",
+            event_count,
+            attempt,
+            f"{last_error or '未知错误'}；已交给 Flowpan 定时增量兜底",
+        )
+
+    def _remember_notification(
+        self,
+        status: str,
+        event_count: int,
+        attempt: int,
+        text: str,
+    ) -> None:
+        with self._lock:
+            self._last_notification = {
+                "status": status,
+                "event_count": int(event_count),
+                "attempt": int(attempt),
+                "text": text,
+                "at": int(time.time()),
+            }
 
     def _notify_after_storage_upload(self, uploaded_item: FileItem) -> None:
         if not self._enabled or not self._flowpan_url or not self._token:
