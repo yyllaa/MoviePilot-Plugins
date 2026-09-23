@@ -1,5 +1,6 @@
 import ast
 import json
+import threading
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -14,8 +15,8 @@ def test_v3_index_and_source_are_aligned():
     package = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))
     source = (PLUGIN / "__init__.py").read_text(encoding="utf-8")
 
-    assert package["FlowpanEventNotify"]["version"] == "3.0.2"
-    assert 'plugin_version = "3.0.2"' in source
+    assert package["FlowpanEventNotify"]["version"] == "3.0.3"
+    assert 'plugin_version = "3.0.3"' in source
     assert package["FlowpanEventNotify"]["system_version"] == ">=3.0.0"
 
 
@@ -32,6 +33,51 @@ def test_v3_runtime_capabilities_are_real():
     assert '"id": "flowpan_sync"' in source
     assert "def action_flowpan_sync" in source
     assert "@eventmanager.register(EventType.PluginAction)" in source
+
+
+def test_notification_triggers_are_serialized_and_pending_events_are_drained():
+    source = ast.parse((PLUGIN / "__init__.py").read_text(encoding="utf-8-sig"))
+    plugin = next(node for node in source.body if isinstance(node, ast.ClassDef))
+    names = {
+        "_queue_notification",
+        "_start_notification_worker",
+        "_run_notification",
+    }
+    methods = [node for node in plugin.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    scope = {"Thread": threading.Thread, "logger": Mock()}
+    module = ast.Module(body=methods, type_ignores=[])
+    exec(compile("from __future__ import annotations\n" + ast.unparse(module), "plugin", "exec"), scope)
+
+    class Probe:
+        _queue_notification = scope["_queue_notification"]
+        _run_notification = scope["_run_notification"]
+
+        def __init__(self):
+            self._enabled = True
+            self._flowpan_url = "http://flowpan"
+            self._token = "token"
+            self._lock = threading.Lock()
+            self._notification_inflight = False
+            self._pending_notification_count = 0
+            self._notification_generation = 0
+            self.started = []
+
+        def _start_notification_worker(self, event_count, generation):
+            self.started.append((event_count, generation))
+
+        def _notify_flowpan(self, event_count):
+            self.sent = getattr(self, "sent", []) + [event_count]
+
+    probe = Probe()
+    assert probe._queue_notification(2, "自动")
+    assert probe._queue_notification(3, "手动")
+    assert probe.started == [(2, 0)]
+    probe._run_notification(2, 0)
+    assert probe.sent == [2]
+    assert probe.started == [(2, 0), (3, 0)]
+    probe._run_notification(3, 0)
+    assert probe.sent == [2, 3]
+    assert probe._pending_notification_count == 0
 
 
 def test_v3_storage_management_contract():

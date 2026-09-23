@@ -47,7 +47,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "3.0.2"
+    plugin_version = "3.0.3"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -75,6 +75,9 @@ class FlowpanEventNotify(_PluginBase):
         self._timer: Optional[Timer] = None
         self._batch_started_at = 0.0
         self._event_count = 0
+        self._notification_inflight = False
+        self._pending_notification_count = 0
+        self._notification_generation = 0
         self._upload_notify_cache: Dict[str, float] = {}
         self._last_connection_test: Optional[Dict[str, Any]] = None
 
@@ -958,10 +961,7 @@ class FlowpanEventNotify(_PluginBase):
                 self._timer.cancel()
                 self._timer = None
         logger.info("【Flowpan事件通知】手动触发增量通知，事件数=%d", event_count)
-        worker = Thread(target=self._notify_flowpan, args=(event_count,))
-        worker.daemon = True
-        worker.start()
-        return True
+        return self._queue_notification(event_count, "手动")
 
     def list_files(self, fileitem: FileItem, recursion: bool = False):
         if not self._storage_item(fileitem):
@@ -1324,9 +1324,7 @@ class FlowpanEventNotify(_PluginBase):
                 "【Flowpan事件通知】达到最长合并时间，发送 %d 个完成事件",
                 flush_count,
             )
-            worker = Thread(target=self._notify_flowpan, args=(flush_count,))
-            worker.daemon = True
-            worker.start()
+            self._queue_notification(flush_count, "最长合并时间")
             return
         logger.info(
             "【Flowpan事件通知】已聚合 %d 个完成事件，等待后续事件",
@@ -1339,11 +1337,13 @@ class FlowpanEventNotify(_PluginBase):
         """
         self._enabled = False
         with self._lock:
+            self._notification_generation += 1
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
             self._batch_started_at = 0.0
             self._event_count = 0
+            self._pending_notification_count = 0
 
     def _flush_batch(self) -> None:
         with self._lock:
@@ -1353,7 +1353,66 @@ class FlowpanEventNotify(_PluginBase):
             self._batch_started_at = 0.0
         if event_count <= 0 or not self._enabled:
             return
-        self._notify_flowpan(event_count)
+        self._queue_notification(event_count, "静默窗口")
+
+    def _queue_notification(self, event_count: int, source: str) -> bool:
+        """串行提交通知，避免手动、自动和存储上传通知并发请求。"""
+        if event_count <= 0 or not self._enabled or not self._flowpan_url or not self._token:
+            return False
+        with self._lock:
+            if self._notification_inflight:
+                self._pending_notification_count += event_count
+                logger.info(
+                    "【Flowpan事件通知】通知已排队 来源=%s 事件数=%d 待发送=%d",
+                    source,
+                    event_count,
+                    self._pending_notification_count,
+                )
+                return True
+            self._notification_inflight = True
+            generation = self._notification_generation
+        logger.info(
+            "【Flowpan事件通知】通知已受理 来源=%s 事件数=%d",
+            source,
+            event_count,
+        )
+        self._start_notification_worker(event_count, generation)
+        return True
+
+    def _start_notification_worker(self, event_count: int, generation: int) -> None:
+        worker = Thread(
+            target=self._run_notification,
+            args=(event_count, generation),
+        )
+        worker.daemon = True
+        worker.start()
+
+    def _run_notification(self, event_count: int, generation: int) -> None:
+        try:
+            self._notify_flowpan(event_count)
+        finally:
+            next_count = 0
+            with self._lock:
+                self._notification_inflight = False
+                if (
+                    generation == self._notification_generation
+                    and self._enabled
+                    and self._flowpan_url
+                    and self._token
+                ):
+                    next_count = self._pending_notification_count
+                    self._pending_notification_count = 0
+                    if next_count:
+                        self._notification_inflight = True
+                        next_generation = self._notification_generation
+                else:
+                    self._pending_notification_count = 0
+            if next_count:
+                logger.info(
+                    "【Flowpan事件通知】继续发送排队通知，事件数=%d",
+                    next_count,
+                )
+                self._start_notification_worker(next_count, next_generation)
 
     def _notify_flowpan(self, event_count: int) -> None:
         notify_url = self._notify_url(self._flowpan_url)
@@ -1413,9 +1472,7 @@ class FlowpanEventNotify(_PluginBase):
             if key:
                 self._upload_notify_cache[key] = now
         logger.info("【Flowpan事件通知】原生存储上传完成，立即通知 Flowpan 增量: %s", path or storage)
-        worker = Thread(target=self._notify_flowpan, args=(1,))
-        worker.daemon = True
-        worker.start()
+        self._queue_notification(1, "原生存储上传")
 
     def _was_storage_upload_notified(self, storage: str, path: str) -> bool:
         key = self._upload_notify_key(storage, path)
