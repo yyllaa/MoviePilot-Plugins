@@ -15,8 +15,8 @@ def test_v3_index_and_source_are_aligned():
     package = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))
     source = (PLUGIN / "__init__.py").read_text(encoding="utf-8")
 
-    assert package["FlowpanEventNotify"]["version"] == "3.0.4"
-    assert 'plugin_version = "3.0.4"' in source
+    assert package["FlowpanEventNotify"]["version"] == "3.0.5"
+    assert 'plugin_version = "3.0.5"' in source
     assert package["FlowpanEventNotify"]["system_version"] == ">=3.0.0"
 
 
@@ -35,6 +35,8 @@ def test_v3_runtime_capabilities_are_real():
     assert "@eventmanager.register(EventType.PluginAction)" in source
     assert "def retry_notification" in source
     assert "def clear_cache" in source
+    assert "def _build_config_summary" in source
+    assert "save_data(\"last_notification\"" in source
 
 
 def test_storage_auth_and_context_failures_invalidate_cache():
@@ -51,6 +53,41 @@ def test_storage_auth_and_context_failures_invalidate_cache():
     assert helper(200, 40140137, "refresh_token 已失效")
     assert helper(0, 0, "context canceled")
     assert not helper(500, 0, "server temporarily unavailable")
+
+
+def test_expired_upload_states_only_remove_old_current_backend_entries(tmp_path, monkeypatch):
+    source = ast.parse((PLUGIN / "flowpan_storage.py").read_text(encoding="utf-8"))
+    plugin = next(node for node in source.body if isinstance(node, ast.ClassDef))
+    names = {"cleanup_expired_upload_states"}
+    methods = [node for node in plugin.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    scope = {"Path": Path, "time": __import__("time"), "logger": Mock()}
+    module = ast.Module(body=methods, type_ignores=[])
+    exec(compile("from __future__ import annotations\n" + ast.unparse(module), "storage", "exec"), scope)
+
+    now = 1_000_000
+    monkeypatch.setattr(scope["time"], "time", lambda: now)
+    old_file = tmp_path / "old.json"
+    new_file = tmp_path / "new.json"
+    other_file = tmp_path / "other.json"
+    for path in (old_file, new_file, other_file):
+        path.write_text("{}", encoding="utf-8")
+
+    class Probe:
+        cleanup_expired_upload_states = scope["cleanup_expired_upload_states"]
+        _upload_state_ttl = 100
+        _storage_backend = "cookie"
+
+        def _upload_state_entries(self):
+            return [
+                {"backend": "cookie", "updated_at": now - 101, "file": str(old_file)},
+                {"backend": "cookie", "updated_at": now - 99, "file": str(new_file)},
+                {"backend": "open", "updated_at": now - 101, "file": str(other_file)},
+            ]
+
+    assert Probe().cleanup_expired_upload_states() == 1
+    assert not old_file.exists()
+    assert new_file.exists()
+    assert other_file.exists()
 
 
 def test_notification_triggers_are_serialized_and_pending_events_are_drained():

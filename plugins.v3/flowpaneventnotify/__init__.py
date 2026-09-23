@@ -32,6 +32,8 @@ DEFAULT_MAX_WAIT_SECONDS = 1800
 DEFAULT_STORAGE_NAME = "Flowpan-115"
 DEFAULT_STORAGE_BACKEND = "cookie"
 DEFAULT_STORAGE_CACHE_TTL_SECONDS = 300
+DEFAULT_UPLOAD_STATE_TTL_SECONDS = 7 * 86400
+NOTIFICATION_STATE_TTL_SECONDS = 30 * 86400
 UPLOAD_NOTIFY_DEDUPE_SECONDS = 300
 
 
@@ -47,7 +49,7 @@ class FlowpanEventNotify(_PluginBase):
         "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/"
         "refs/heads/v2/src/assets/images/misc/u115.png"
     )
-    plugin_version = "3.0.4"
+    plugin_version = "3.0.5"
     plugin_author = "yyllaa"
     author_url = "https://github.com/yyllaa"
     plugin_config_prefix = "flowpaneventnotify_"
@@ -70,6 +72,7 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_backend = DEFAULT_STORAGE_BACKEND
         self._storage_part_size_mb = 10
         self._storage_cache_ttl_seconds = DEFAULT_STORAGE_CACHE_TTL_SECONDS
+        self._upload_state_ttl_seconds = DEFAULT_UPLOAD_STATE_TTL_SECONDS
         self._storage_api: Optional[FlowpanStorageAPI] = None
         self._lock = Lock()
         self._timer: Optional[Timer] = None
@@ -115,6 +118,12 @@ class FlowpanEventNotify(_PluginBase):
             0,
             86400,
         )
+        upload_state_ttl_seconds = self._bounded_int(
+            merged.get("upload_state_ttl_seconds"),
+            DEFAULT_UPLOAD_STATE_TTL_SECONDS,
+            0,
+            30 * 86400,
+        )
         self._enabled = bool(merged.get("enabled"))
         self._flowpan_url = str(merged.get("flowpan_url") or "").strip()
         self._token = str(merged.get("token") or "").strip()
@@ -126,10 +135,11 @@ class FlowpanEventNotify(_PluginBase):
         self._storage_backend = storage_backend
         self._storage_part_size_mb = storage_part_size_mb
         self._storage_cache_ttl_seconds = storage_cache_ttl_seconds
+        self._upload_state_ttl_seconds = upload_state_ttl_seconds
         self._storage_api = None
         with self._lock:
             self._last_connection_test = None
-            self._last_notification = {}
+            self._last_notification = self._load_notification_state()
         if self._storage_bridge_enabled and self._storage_name:
             target_storages.add(self._storage_name.casefold())
         elif self._storage_name:
@@ -152,7 +162,11 @@ class FlowpanEventNotify(_PluginBase):
                     storage_backend=self._storage_backend,
                     part_size_mb=self._storage_part_size_mb,
                     list_cache_ttl=self._storage_cache_ttl_seconds,
+                    upload_state_ttl_seconds=self._upload_state_ttl_seconds,
                 )
+                removed_states = self._storage_api.cleanup_expired_upload_states()
+                if removed_states:
+                    logger.info("【Flowpan事件通知】自动清理过期上传断点 %d 条", removed_states)
                 if not self._flowpan_url or not self._token:
                     logger.warning("【Flowpan事件通知】Flowpan 存储已注册；实际上传前请配置 Flowpan 地址和密钥")
             except Exception as error:
@@ -166,6 +180,7 @@ class FlowpanEventNotify(_PluginBase):
             "storage_backend": self._storage_backend,
             "storage_part_size_mb": storage_part_size_mb,
             "storage_cache_ttl_seconds": storage_cache_ttl_seconds,
+            "upload_state_ttl_seconds": upload_state_ttl_seconds,
         }
         if config and normalized != config:
             self.update_config(normalized)
@@ -191,7 +206,7 @@ class FlowpanEventNotify(_PluginBase):
             {
                 "cmd": "/flowpan_sync",
                 "event": EventType.PluginAction,
-                "desc": "立即通知 Flowpan 执行增量同步",
+                "desc": "提交 Flowpan 增量通知（立即返回，实际同步由 Flowpan 执行）",
                 "category": "Flowpan",
                 "data": {"action": "flowpan_sync"},
             }
@@ -264,6 +279,7 @@ class FlowpanEventNotify(_PluginBase):
         :return List: 插件页面列表
         """
         cache = self._build_cache_summary()
+        config_state = self._build_config_summary()
         with self._lock:
             connection_test = dict(self._last_connection_test) if self._last_connection_test else None
         notification = self._build_notification_summary()
@@ -419,6 +435,16 @@ class FlowpanEventNotify(_PluginBase):
                                     "class": "mb-3",
                                 },
                                 "text": notification["summary"],
+                            },
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": config_state["tone"],
+                                    "variant": "tonal",
+                                    "density": "compact",
+                                    "class": "mb-3",
+                                },
+                                "text": config_state["summary"],
                             },
                             *(
                                 [
@@ -898,6 +924,24 @@ class FlowpanEventNotify(_PluginBase):
                                     }
                                 ],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "upload_state_ttl_seconds",
+                                            "label": "上传断点保留（秒）",
+                                            "type": "number",
+                                            "min": 0,
+                                            "max": 2592000,
+                                            "hint": "0 表示不自动清理，默认 7 天",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
                         ],
                     },
                     {
@@ -925,6 +969,7 @@ class FlowpanEventNotify(_PluginBase):
             "storage_backend": DEFAULT_STORAGE_BACKEND,
             "storage_part_size_mb": 10,
             "storage_cache_ttl_seconds": DEFAULT_STORAGE_CACHE_TTL_SECONDS,
+            "upload_state_ttl_seconds": DEFAULT_UPLOAD_STATE_TTL_SECONDS,
         }
 
     def test_connection(self) -> Dict[str, Any]:
@@ -1310,6 +1355,31 @@ class FlowpanEventNotify(_PluginBase):
             "time_summary": f"设置 TTL：{ttl_seconds} 秒",
         }
 
+    def _build_config_summary(self) -> Dict[str, str]:
+        missing = []
+        if not self._enabled:
+            missing.append("插件未启用")
+        if not self._flowpan_url:
+            missing.append("Flowpan 地址未配置")
+        if not self._token:
+            missing.append("事件密钥未配置")
+        if self._storage_bridge_enabled and not self._storage_api:
+            missing.append("存储桥未初始化")
+        if missing:
+            return {
+                "tone": "warning",
+                "summary": "配置诊断：" + "；".join(missing),
+            }
+        bridge = "已注册" if self._storage_bridge_enabled else "未启用"
+        backend = "OpenAPI" if self._storage_backend == "open" else "Cookie"
+        return {
+            "tone": "success",
+            "summary": (
+                f"配置诊断：通知可用；Flowpan 地址已配置；事件密钥已配置；"
+                f"存储桥 {bridge}；当前链路 {backend}"
+            ),
+        }
+
     def _build_upload_state_summary(self) -> Dict[str, Any]:
         if not self._storage_api:
             return {
@@ -1635,14 +1705,46 @@ class FlowpanEventNotify(_PluginBase):
         attempt: int,
         text: str,
     ) -> None:
+        state = {
+            "status": status,
+            "event_count": int(event_count),
+            "attempt": int(attempt),
+            "text": text,
+            "at": int(time.time()),
+            "flowpan_url": self._flowpan_url,
+            "storage_backend": self._storage_backend,
+        }
         with self._lock:
-            self._last_notification = {
-                "status": status,
-                "event_count": int(event_count),
-                "attempt": int(attempt),
-                "text": text,
-                "at": int(time.time()),
-            }
+            self._last_notification = state
+        try:
+            self.save_data("last_notification", state)
+        except Exception as error:
+            logger.warning("【Flowpan事件通知】保存通知状态失败: %s", error)
+
+    def _load_notification_state(self) -> Dict[str, Any]:
+        try:
+            state = self.get_data("last_notification")
+        except Exception as error:
+            logger.warning("【Flowpan事件通知】读取通知状态失败: %s", error)
+            return {}
+        if not isinstance(state, dict):
+            return {}
+        try:
+            if state.get("flowpan_url") != self._flowpan_url:
+                return {}
+            if state.get("storage_backend") != self._storage_backend:
+                return {}
+            if int(time.time()) - int(state.get("at") or 0) > NOTIFICATION_STATE_TTL_SECONDS:
+                return {}
+        except (TypeError, ValueError):
+            return {}
+        return {
+            "status": str(state.get("status") or ""),
+            "event_count": int(state.get("event_count") or 0),
+            "attempt": int(state.get("attempt") or 0),
+            "text": str(state.get("text") or ""),
+            "at": int(state.get("at") or 0),
+        }
 
     def _notify_after_storage_upload(self, uploaded_item: FileItem) -> None:
         if not self._enabled or not self._flowpan_url or not self._token:

@@ -41,6 +41,7 @@ class FlowpanStorageAPI:
         storage_backend: str = "cookie",
         part_size_mb: int = 10,
         list_cache_ttl: int = 300,
+        upload_state_ttl_seconds: int = 7 * 86400,
     ) -> None:
         self._flowpan_url = (flowpan_url or "").strip().rstrip("/")
         self._token = (token or "").strip()
@@ -67,6 +68,11 @@ class FlowpanStorageAPI:
         except (TypeError, ValueError):
             cache_ttl = 300
         self._list_cache_ttl = max(0, min(cache_ttl, 86400))
+        try:
+            upload_state_ttl = int(upload_state_ttl_seconds)
+        except (TypeError, ValueError):
+            upload_state_ttl = 7 * 86400
+        self._upload_state_ttl = max(0, min(upload_state_ttl, 30 * 86400))
         self.transtype = {"copy": "复制", "move": "移动"}
 
     def upload(
@@ -627,6 +633,28 @@ class FlowpanStorageAPI:
                 removed += 1
             except Exception as error:
                 logger.warning(f"【Flowpan存储】清理断点状态失败 {state_file}: {error}")
+        return removed
+
+    def cleanup_expired_upload_states(self, current_backend_only: bool = True) -> int:
+        """清理超过保留期且属于当前链路的断点状态。"""
+        if self._upload_state_ttl <= 0:
+            return 0
+        cutoff = int(time.time()) - self._upload_state_ttl
+        removed = 0
+        for entry in self._upload_state_entries():
+            if current_backend_only and entry.get("backend") not in ("", self._storage_backend):
+                continue
+            updated_at = int(entry.get("updated_at") or 0)
+            if not updated_at or updated_at >= cutoff:
+                continue
+            state_file = Path(str(entry.get("file") or ""))
+            if not state_file.exists():
+                continue
+            try:
+                state_file.unlink()
+                removed += 1
+            except Exception as error:
+                logger.warning(f"【Flowpan存储】清理过期断点失败 {state_file}: {error}")
         return removed
 
     def support_transtype(self) -> dict:
